@@ -11,6 +11,7 @@
 #include "llvm/Passes/PassPlugin.h"
 
 #include <cmath>
+#include <map>
 
 namespace llvm {
     class LocalOpts : public PassInfoMixin<LocalOpts> {

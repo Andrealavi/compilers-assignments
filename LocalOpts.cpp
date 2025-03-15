@@ -179,7 +179,6 @@ bool strengthReduction(Instruction &inst) {
 
         if (opCode == Instruction::Mul) {
             if ((constantValue & (constantValue - 1)) == 0) {
-                std::cout << "cacca" << std::endl;
                 newInst = BinaryOperator::Create(
                     Instruction::Shl, variable, ConstantInt::get(inst.getType(), log2(constantValue)));
 
@@ -214,11 +213,67 @@ bool strengthReduction(Instruction &inst) {
     return false;
 };
 
+bool multiInstructionOptimization(Instruction &Inst) {
+    if (Inst.isBinaryOp()) {
+        Value* LHS = Inst.getOperand(0);
+        Value* RHS = Inst.getOperand(1);
+        unsigned int opCode = Inst.getOpcode();
+
+        ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : dyn_cast<ConstantInt>(RHS);
+        if (!constant) {
+            return false;
+        }
+
+        int64_t constantValue = constant->getZExtValue();
+
+        Value *variable = (constant == LHS) ? RHS : LHS;
+        Instruction *varInst = dyn_cast<Instruction>(variable);
+
+        if (!varInst || !varInst->isBinaryOp()) {
+            return false;
+        }
+
+        Value *varLHS = varInst->getOperand(0);
+        Value *varRHS = varInst->getOperand(1);
+        unsigned int varOpCode = varInst->getOpcode();
+
+        ConstantInt *varConstant = isa<ConstantInt>(varLHS) ? dyn_cast<ConstantInt>(varLHS) : dyn_cast<ConstantInt>(varRHS);
+        if (!varConstant) {
+            return false;
+        }
+
+        int64_t varConstantValue = varConstant->getZExtValue();
+
+        Value *varVariable = (varConstant == varLHS) ? varRHS : varLHS;
+
+        if (varConstantValue != constantValue) {
+            return false;
+        }
+
+        std::map<unsigned int, unsigned int> opMap;
+
+        opMap[Instruction::Add] = Instruction::Sub;
+        opMap[Instruction::Sub] = Instruction::Add;
+        opMap[Instruction::Mul] = Instruction::SDiv;
+        opMap[Instruction::SDiv] = Instruction::Mul;
+
+        if (opMap[opCode] == varOpCode) {
+            Inst.replaceAllUsesWith(varVariable);
+            //Inst.eraseFromParent();
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool runOnBBOptimizations(BasicBlock &BB) {
 
     for (Instruction &Inst : BB) {
         algebraicIdentityOptimization(Inst);
         strengthReduction(Inst);
+        multiInstructionOptimization(Inst);
     }
 
     return true;
