@@ -10,6 +10,8 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 
+#include <cmath>
+
 namespace llvm {
     class LocalOpts : public PassInfoMixin<LocalOpts> {
         public:

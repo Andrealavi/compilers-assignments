@@ -1,5 +1,4 @@
 #include "LocalOpts.h"
-#include <iostream>
 
 
 using namespace llvm;
@@ -60,14 +59,14 @@ bool runOnBasicBlock(BasicBlock &B) {
 
 bool algebraicIdentityOptimization(Instruction &Inst) {
     if (Inst.isBinaryOp()) {
-        Value *op1 = Inst.getOperand(0);
-        Value *op2 = Inst.getOperand(1);
+        Value *LHS = Inst.getOperand(0);
+        Value *RHS = Inst.getOperand(1);
 
         unsigned int opCode = Inst.getOpcode();
 
         Value *newValue = nullptr;
 
-        if (op1 == op2) {
+        if (LHS == RHS) {
             switch (opCode) {
                 case Instruction::Sub:
                     newValue = Constant::getNullValue(Inst.getType());
@@ -82,22 +81,22 @@ bool algebraicIdentityOptimization(Instruction &Inst) {
                 break;
 
                 case Instruction::And:
-                    newValue = op1;
+                    newValue = LHS;
                 break;
 
                 case Instruction::Or:
-                    newValue = op1;
+                    newValue = LHS;
                 break;
 
                 default:
                 break;
             }
-        } else if (Value *constant = isa<Constant>(op1) ? op1 : isa<Constant>(op2) ? op2 : nullptr) {
+        } else if (Value *constant = isa<Constant>(LHS) ? LHS : isa<Constant>(RHS) ? RHS : nullptr) {
             if (!constant) {
                 return false;
             }
 
-            Value *variable = constant == op1 ? op2 : op1;
+            Value *variable = constant == LHS ? RHS : LHS;
 
             unsigned int constantValue = constant->getValueID();
 
@@ -149,7 +148,7 @@ bool algebraicIdentityOptimization(Instruction &Inst) {
         if (newValue) {
             Inst.replaceAllUsesWith(newValue);
 
-            Inst.eraseFromParent();
+            //Inst.eraseFromParent();
 
             return true;
         }
@@ -159,10 +158,67 @@ bool algebraicIdentityOptimization(Instruction &Inst) {
     return false;
 }
 
+bool strengthReduction(Instruction &inst) {
+    if (inst.isBinaryOp()) {
+        Value *LHS = inst.getOperand(0);
+        Value *RHS = inst.getOperand(1);
+
+        unsigned int opCode = inst.getOpcode();
+
+        ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : dyn_cast<ConstantInt>(RHS);
+
+        if (!constant) {
+            return false;
+        }
+
+        Value *variable = (constant == LHS) ? RHS : LHS;
+
+        Instruction *newInst = nullptr;
+
+        int64_t constantValue = constant->getSExtValue();
+
+        if (opCode == Instruction::Mul) {
+            if ((constantValue & (constantValue - 1)) == 0) {
+                std::cout << "cacca" << std::endl;
+                newInst = BinaryOperator::Create(
+                    Instruction::Shl, variable, ConstantInt::get(inst.getType(), log2(constantValue)));
+
+                newInst->insertAfter(&inst);
+            } else {
+                Instruction *newInstShift = BinaryOperator::Create(
+                    Instruction::Shl, variable, ConstantInt::get(inst.getType(), ceil(log2(constantValue))));
+
+                newInstShift->insertAfter(&inst);
+
+                newInst = BinaryOperator::Create(
+                    Instruction::Sub, newInst, variable);
+
+                newInst->insertAfter(newInstShift);
+            }
+        } else if (opCode == Instruction::SDiv || opCode == Instruction::UDiv) {
+                    if ((constantValue & (constantValue - 1)) == 0) { // Check if constantValue is a power of 2
+                        newInst = BinaryOperator::Create(
+                            Instruction::LShr, variable, ConstantInt::get(inst.getType(), log2(constantValue)));
+                        newInst->insertAfter(&inst);
+                    }
+                }
+
+        if (newInst) {
+            inst.replaceAllUsesWith(newInst);
+            //inst.eraseFromParent();
+
+            return true;
+        }
+    }
+
+    return false;
+};
+
 bool runOnBBOptimizations(BasicBlock &BB) {
 
     for (Instruction &Inst : BB) {
         algebraicIdentityOptimization(Inst);
+        strengthReduction(Inst);
     }
 
     return true;
