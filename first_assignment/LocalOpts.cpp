@@ -1,5 +1,4 @@
 #include "LocalOpts.h"
-#include <iostream>
 #include <llvm-19/llvm/IR/LLVMContext.h>
 #include <llvm-19/llvm/IR/Metadata.h>
 
@@ -105,7 +104,6 @@ bool algebraicIdentityOptimization(Instruction &Inst) {
             if (constantValue == 0) {
                 switch (opCode) {
                     case Instruction::Add:
-                        std::cout << "pvo" << std::endl;
                         newValue = variable;
                     break;
 
