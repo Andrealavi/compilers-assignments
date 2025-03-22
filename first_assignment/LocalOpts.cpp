@@ -1,5 +1,7 @@
 #include "LocalOpts.h"
 #include <iostream>
+#include <llvm-19/llvm/IR/LLVMContext.h>
+#include <llvm-19/llvm/IR/Metadata.h>
 
 using namespace llvm;
 
@@ -270,11 +272,42 @@ bool multiInstructionOptimization(Instruction &Inst) {
 }
 
 bool runOnBBOptimizations(BasicBlock &BB) {
+    MDNode *MD;
+    LLVMContext &context = BB.getContext();
 
     for (Instruction &Inst : BB) {
-        algebraicIdentityOptimization(Inst);
-        strengthReduction(Inst);
-        multiInstructionOptimization(Inst);
+        if (algebraicIdentityOptimization(Inst)) {
+            MD = MDNode::get(
+                context,
+                MDString::get(
+                    context,
+                    "Applied an algebraic identity optimization")
+            );
+
+            Inst.setMetadata("algebraic", MD);
+        }
+
+        if (strengthReduction(Inst)) {
+            MD = MDNode::get(
+                context,
+                MDString::get(
+                    context,
+                    "Applied a strength reduction optimization")
+            );
+
+            Inst.setMetadata("strength", MD);
+        }
+
+        if (multiInstructionOptimization(Inst)) {
+            MD = MDNode::get(
+                context,
+                MDString::get(
+                    context,
+                    "Applied a multi instruction optimization")
+            );
+
+            Inst.setMetadata("strength", MD);
+        }
     }
 
     return true;
