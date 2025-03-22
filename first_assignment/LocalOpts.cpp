@@ -1,6 +1,4 @@
 #include "LocalOpts.h"
-#include <llvm-19/llvm/IR/LLVMContext.h>
-#include <llvm-19/llvm/IR/Metadata.h>
 
 using namespace llvm;
 
