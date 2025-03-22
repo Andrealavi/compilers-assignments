@@ -91,18 +91,19 @@ bool algebraicIdentityOptimization(Instruction &Inst) {
                 default:
                 break;
             }
-        } else if (Value *constant = isa<Constant>(LHS) ? LHS : isa<Constant>(RHS) ? RHS : nullptr) {
+        } else if (ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : isa<ConstantInt>(RHS) ? dyn_cast<ConstantInt>(RHS) : nullptr) {
             if (!constant) {
                 return false;
             }
 
             Value *variable = constant == LHS ? RHS : LHS;
 
-            unsigned int constantValue = constant->getValueID();
+            int64_t constantValue = constant->getSExtValue();
 
             if (constantValue == 0) {
                 switch (opCode) {
                     case Instruction::Add:
+                        std::cout << "pvo" << std::endl;
                         newValue = variable;
                     break;
 
