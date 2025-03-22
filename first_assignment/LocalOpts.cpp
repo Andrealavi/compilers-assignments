@@ -1,5 +1,5 @@
 #include "LocalOpts.h"
-
+#include <iostream>
 
 using namespace llvm;
 
@@ -190,7 +190,7 @@ bool strengthReduction(Instruction &inst) {
                 newInstShift->insertAfter(&inst);
 
                 newInst = BinaryOperator::Create(
-                    Instruction::Sub, newInst, variable);
+                    Instruction::Sub, newInstShift, variable);
 
                 newInst->insertAfter(newInstShift);
             }
