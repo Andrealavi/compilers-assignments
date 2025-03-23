@@ -1,6 +1,14 @@
-#include "LocalOpts.h"
+#include "LocalOpts.hpp"
 
 using namespace llvm;
+
+static cl::opt<bool> LocalOptsVerbose(
+    "local-opts-verbose",
+    cl::desc(
+        "Enables verbose output for the different optimizaations"
+    ),
+    cl::init(false)
+);
 
 /**
  * Optimize instructions based on algebraic identities
@@ -9,37 +17,49 @@ using namespace llvm;
  * @param Inst The instruction to be optimized
  * @return true if the instruction was optimized, false otherwise
  */
-bool algebraicIdentityOptimization(Instruction &Inst) {
+bool algebraicIdentityOptimization(Instruction &inst) {
     // Only process binary operators
-    if (Inst.isBinaryOp()) {
-        Value *LHS = Inst.getOperand(0);  // Left-hand side operand
-        Value *RHS = Inst.getOperand(1);  // Right-hand side operand
+    if (inst.isBinaryOp()) {
+        Value *LHS = inst.getOperand(0);  // Left-hand side operand
+        Value *RHS = inst.getOperand(1);  // Right-hand side operand
 
-        unsigned int opCode = Inst.getOpcode();  // Operation code (Add, Sub, etc.)
+        unsigned int opCode = inst.getOpcode();  // Operation code (Add, Sub, etc.)
 
         Value *newValue = nullptr;  // Will hold the simplified value if optimization applies
+
+        std::string identity;
 
         // Case 1: Operands are the same (x op x)
         if (LHS == RHS) {
             switch (opCode) {
                 case Instruction::Sub:  // x - x = 0
-                    newValue = Constant::getNullValue(Inst.getType());
+                    identity = "x - x = 0";
+                    newValue = Constant::getNullValue(inst.getType());
                 break;
 
                 case Instruction::SDiv:  // x / x = 1 (signed division)
-                    newValue = ConstantInt::get(Inst.getType(), 1);
+                    identity = "x / x = 1";
+                    newValue = ConstantInt::get(inst.getType(), 1);
                 break;
 
                 case Instruction::UDiv:  // x / x = 1 (unsigned division)
-                    newValue = ConstantInt::get(Inst.getType(), 1);
+                    identity = "x / x = 1";
+                    newValue = ConstantInt::get(inst.getType(), 1);
                 break;
 
                 case Instruction::And:  // x & x = x
+                    identity = "x & x = x";
                     newValue = LHS;
                 break;
 
                 case Instruction::Or:  // x | x = x
+                    identity = "x | x = x";
                     newValue = LHS;
+                break;
+
+                case Instruction::Xor:  // x | x = x
+                    identity = "x ^ x = 0";
+                    newValue = Constant::getNullValue(inst.getType());
                 break;
 
                 default:
@@ -61,22 +81,32 @@ bool algebraicIdentityOptimization(Instruction &Inst) {
             if (constantValue == 0) {
                 switch (opCode) {
                     case Instruction::Add:  // x + 0 = x
+                        identity = "x + 0 = x";
                         newValue = variable;
                     break;
 
                     case Instruction::Sub:  // x - 0 = x or 0 - x = -x
-                        newValue = variable;  // Note: this is correct only if constant is RHS
+                        if (constant == RHS) {
+                            identity = "x - 0 = x";
+                            newValue = variable;
+                        } else {
+                            identity = "0 - x = -x";
+                            newValue = BinaryOperator::CreateNeg(RHS);
+                        }
                     break;
 
                     case Instruction::Mul:  // x * 0 = 0
-                        newValue = Constant::getNullValue(Inst.getType());
+                        identity = "x * 0 = 0";
+                        newValue = Constant::getNullValue(inst.getType());
                     break;
 
                     case Instruction::Shl:  // x << 0 = x
+                        identity = "x << 0 = x";
                         newValue = variable;
                     break;
 
                     case Instruction::LShr:  // x >> 0 = x
+                        identity = "x >> 0 = x";
                         newValue = variable;
                     break;
 
@@ -88,14 +118,17 @@ bool algebraicIdentityOptimization(Instruction &Inst) {
             else if (constantValue == 1) {
                 switch (opCode) {
                     case Instruction::Mul:  // x * 1 = x
+                        identity = "x * 1 = x";
                         newValue = variable;
                     break;
 
                     case Instruction::UDiv:  // x / 1 = x (unsigned)
+                        identity = "x / 1 = x";
                         newValue = variable;
                     break;
 
                     case Instruction::SDiv:  // x / 1 = x (signed)
+                        identity = "x / 1 = x";
                         newValue = variable;
                     break;
 
@@ -107,11 +140,16 @@ bool algebraicIdentityOptimization(Instruction &Inst) {
 
         // If we found an optimization, apply it
         if (newValue) {
+            if (LocalOptsVerbose) {
+                outs() << "Applying Algebraic identity optimization on instruction: " << inst << "\n";
+                outs() << "The identity found was of the type: " << identity << "\n\n";
+            }
+
             // Replace all uses of the original instruction with the new optimized value
-            Inst.replaceAllUsesWith(newValue);
+            inst.replaceAllUsesWith(newValue);
 
             // Note: The instruction is not actually removed from the parent
-            // This would require: Inst.eraseFromParent();
+            // This would require: inst.eraseFromParent();
 
             return true;
         }
@@ -148,11 +186,14 @@ bool strengthReduction(Instruction &inst) {
 
         int64_t constantValue = constant->getSExtValue();
 
+        std::string type;
+
         // Handle multiplication operations
         if (opCode == Instruction::Mul) {
             if ((constantValue & (constantValue - 1)) == 0) {
                 // If constant is a power of 2, replace multiplication with left shift
                 // x * 2^n => x << n
+                type = "x * 2^2 ==> x << n";
                 newInst = BinaryOperator::Create(
                     Instruction::Shl, variable, ConstantInt::get(inst.getType(), log2(constantValue)));
 
@@ -160,6 +201,7 @@ bool strengthReduction(Instruction &inst) {
             } else {
                 // For other constants, try to approximate using shifts and subtractions
                 // x * c => (x << ceil(log2(c))) - x
+                type = "x * c ==> x << ceil(log2(c)) - x";
                 Instruction *newInstShift = BinaryOperator::Create(
                     Instruction::Shl, variable, ConstantInt::get(inst.getType(), ceil(log2(constantValue))));
 
@@ -184,6 +226,11 @@ bool strengthReduction(Instruction &inst) {
 
         // If optimization was applied, update all uses of the original instruction
         if (newInst) {
+            if (LocalOptsVerbose) {
+                outs() << "Applying Strength Reduction optimization on instruction: " << inst << "\n";
+                outs() << "The transformation applied was: " << type << "\n\n";
+            }
+
             inst.replaceAllUsesWith(newInst);
             // Note: The instruction is not actually removed
             // This would require: inst.eraseFromParent();
@@ -203,11 +250,11 @@ bool strengthReduction(Instruction &inst) {
  * @param Inst The instruction to be optimized
  * @return true if optimization was applied, false otherwise
  */
-bool multiInstructionOptimization(Instruction &Inst) {
-    if (Inst.isBinaryOp()) {
-        Value* LHS = Inst.getOperand(0);
-        Value* RHS = Inst.getOperand(1);
-        unsigned int opCode = Inst.getOpcode();
+bool multiInstructionOptimization(Instruction &inst) {
+    if (inst.isBinaryOp()) {
+        Value* LHS = inst.getOperand(0);
+        Value* RHS = inst.getOperand(1);
+        unsigned int opCode = inst.getOpcode();
 
         // Find the constant operand, if any
         ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : dyn_cast<ConstantInt>(RHS);
@@ -247,6 +294,8 @@ bool multiInstructionOptimization(Instruction &Inst) {
             return false;
         }
 
+
+
         // Define pairs of inverse operations
         std::map<unsigned int, unsigned int> opMap;
         opMap[Instruction::Add] = Instruction::Sub;      // Addition and subtraction are inverses
@@ -256,11 +305,16 @@ bool multiInstructionOptimization(Instruction &Inst) {
 
         // Check if the current operation and the nested operation are inverse operations
         if (opMap[opCode] == varOpCode) {
+            if (LocalOptsVerbose) {
+                outs() << "Applying Multi Instruction optimization on instruction: " << inst << "\n";
+                outs() << "This is because, this instruction " << varInst << "is specular to the modified instruction\n\n";
+            }
+
             // If so, we can simplify to just the original variable
             // For example: (x + 5) - 5 = x or (x * 2) / 2 = x
-            Inst.replaceAllUsesWith(varVariable);
+            inst.replaceAllUsesWith(varVariable);
             // Note: Instruction is not actually removed
-            // This would require: Inst.eraseFromParent();
+            // This would require: inst.eraseFromParent();
 
             return true;
         }
@@ -280,9 +334,8 @@ bool runOnBBOptimizations(BasicBlock &BB) {
     MDNode *MD;
     LLVMContext &context = BB.getContext();
 
-    for (Instruction &Inst : BB) {
-        // Try to apply algebraic identity optimization
-        if (algebraicIdentityOptimization(Inst)) {
+    for (Instruction &inst : BB) {
+        if (algebraicIdentityOptimization(inst)) { // Try to apply algebraic identity optimization
             // Add metadata to mark this instruction as optimized with algebraic identity
             MD = MDNode::get(
                 context,
@@ -291,11 +344,8 @@ bool runOnBBOptimizations(BasicBlock &BB) {
                     "Applied an algebraic identity optimization")
             );
 
-            Inst.setMetadata("algebraic", MD);
-        }
-
-        // Try to apply strength reduction optimization
-        if (strengthReduction(Inst)) {
+            inst.setMetadata("algebraic", MD);
+        } else if (strengthReduction(inst)) { // Try to apply strength reduction optimization
             // Add metadata to mark this instruction as optimized with strength reduction
             MD = MDNode::get(
                 context,
@@ -304,11 +354,8 @@ bool runOnBBOptimizations(BasicBlock &BB) {
                     "Applied a strength reduction optimization")
             );
 
-            Inst.setMetadata("strength", MD);
-        }
-
-        // Try to apply multi-instruction optimization
-        if (multiInstructionOptimization(Inst)) {
+            inst.setMetadata("strength", MD);
+        } else if (multiInstructionOptimization(inst)) { // Try to apply multi-instruction optimization
             // Add metadata to mark this instruction as optimized with multi-instruction opt
             MD = MDNode::get(
                 context,
@@ -317,7 +364,7 @@ bool runOnBBOptimizations(BasicBlock &BB) {
                     "Applied a multi instruction optimization")
             );
 
-            Inst.setMetadata("strength", MD);
+            inst.setMetadata("multi-instruction", MD);
         }
     }
 
@@ -333,12 +380,20 @@ bool runOnBBOptimizations(BasicBlock &BB) {
 bool runOnFunction(Function &F) {
     bool Transformed = false;
 
+    if (LocalOptsVerbose) {
+        outs() << "--- OPTIMIZATIONS ---\n\n";
+    }
+
     // Iterate over all basic blocks in the function
     for (auto Iter = F.begin(); Iter != F.end(); ++Iter) {
         // Apply optimizations to each basic block
         if (runOnBBOptimizations(*Iter)) {
             Transformed = true;
         }
+    }
+
+    if (LocalOptsVerbose) {
+        outs() << "---------------------\n\n";
     }
 
     return Transformed;
