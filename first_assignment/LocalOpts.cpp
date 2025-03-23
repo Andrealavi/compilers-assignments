@@ -2,10 +2,17 @@
 
 using namespace llvm;
 
+/**
+ * Command-line option that enables verbose output for the optimizer.
+ * When enabled, the pass will print detailed information about
+ * each optimization that is applied.
+ *
+ * Use with `-local-opts-verbose` flag when running opt.
+ */
 static cl::opt<bool> LocalOptsVerbose(
     "local-opts-verbose",
     cl::desc(
-        "Enables verbose output for the different optimizaations"
+        "Enables verbose output for the different optimizations"
     ),
     cl::init(false)
 );
@@ -14,7 +21,7 @@ static cl::opt<bool> LocalOptsVerbose(
  * Optimize instructions based on algebraic identities
  * Examples: x-x=0, x/x=1, x&x=x, x|x=x, x+0=x, x*0=0, etc.
  *
- * @param Inst The instruction to be optimized
+ * @param inst The instruction to be optimized
  * @return true if the instruction was optimized, false otherwise
  */
 bool algebraicIdentityOptimization(Instruction &inst) {
@@ -27,7 +34,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
 
         Value *newValue = nullptr;  // Will hold the simplified value if optimization applies
 
-        std::string identity;
+        std::string identity;  // Stores the description of the applied identity for verbose output
 
         // Case 1: Operands are the same (x op x)
         if (LHS == RHS) {
@@ -35,35 +42,35 @@ bool algebraicIdentityOptimization(Instruction &inst) {
                 case Instruction::Sub:  // x - x = 0
                     identity = "x - x = 0";
                     newValue = Constant::getNullValue(inst.getType());
-                break;
+                    break;
 
                 case Instruction::SDiv:  // x / x = 1 (signed division)
                     identity = "x / x = 1";
                     newValue = ConstantInt::get(inst.getType(), 1);
-                break;
+                    break;
 
                 case Instruction::UDiv:  // x / x = 1 (unsigned division)
                     identity = "x / x = 1";
                     newValue = ConstantInt::get(inst.getType(), 1);
-                break;
+                    break;
 
                 case Instruction::And:  // x & x = x
                     identity = "x & x = x";
                     newValue = LHS;
-                break;
+                    break;
 
                 case Instruction::Or:  // x | x = x
                     identity = "x | x = x";
                     newValue = LHS;
-                break;
+                    break;
 
-                case Instruction::Xor:  // x | x = x
+                case Instruction::Xor:  // x ^ x = 0
                     identity = "x ^ x = 0";
                     newValue = Constant::getNullValue(inst.getType());
-                break;
+                    break;
 
                 default:
-                break;
+                    break;
             }
         }
         // Case 2: One operand is a constant
@@ -83,7 +90,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
                     case Instruction::Add:  // x + 0 = x
                         identity = "x + 0 = x";
                         newValue = variable;
-                    break;
+                        break;
 
                     case Instruction::Sub:  // x - 0 = x or 0 - x = -x
                         if (constant == RHS) {
@@ -91,27 +98,28 @@ bool algebraicIdentityOptimization(Instruction &inst) {
                             newValue = variable;
                         } else {
                             identity = "0 - x = -x";
+                            // Create negation instruction
                             newValue = BinaryOperator::CreateNeg(RHS);
                         }
-                    break;
+                        break;
 
                     case Instruction::Mul:  // x * 0 = 0
                         identity = "x * 0 = 0";
                         newValue = Constant::getNullValue(inst.getType());
-                    break;
+                        break;
 
                     case Instruction::Shl:  // x << 0 = x
                         identity = "x << 0 = x";
                         newValue = variable;
-                    break;
+                        break;
 
                     case Instruction::LShr:  // x >> 0 = x
                         identity = "x >> 0 = x";
                         newValue = variable;
-                    break;
+                        break;
 
                     default:
-                    break;
+                        break;
                 }
             }
             // Special case for constant value 1
@@ -120,20 +128,20 @@ bool algebraicIdentityOptimization(Instruction &inst) {
                     case Instruction::Mul:  // x * 1 = x
                         identity = "x * 1 = x";
                         newValue = variable;
-                    break;
+                        break;
 
                     case Instruction::UDiv:  // x / 1 = x (unsigned)
                         identity = "x / 1 = x";
                         newValue = variable;
-                    break;
+                        break;
 
                     case Instruction::SDiv:  // x / 1 = x (signed)
                         identity = "x / 1 = x";
                         newValue = variable;
-                    break;
+                        break;
 
                     default:
-                    break;
+                        break;
                 }
             }
         }
@@ -159,8 +167,14 @@ bool algebraicIdentityOptimization(Instruction &inst) {
 }
 
 /**
- * Apply strength reduction optimizations to convert expensive operations to cheaper ones
- * Examples: multiplication by power of 2 becomes left shift, division by power of 2 becomes right shift
+ * Apply strength reduction optimizations to convert expensive operations to cheaper ones.
+ * This transformation replaces costly operations with equivalent but more efficient
+ * sequences of instructions.
+ *
+ * Examples:
+ * - multiplication by power of 2 becomes left shift (x * 2^n => x << n)
+ * - division by power of 2 becomes right shift (x / 2^n => x >> n)
+ * - multiplication by constant approximated by shifts and subtraction
  *
  * @param inst The instruction to be optimized
  * @return true if optimization was applied, false otherwise
@@ -186,14 +200,14 @@ bool strengthReduction(Instruction &inst) {
 
         int64_t constantValue = constant->getSExtValue();
 
-        std::string type;
+        std::string type;  // Stores the description of the transformation for verbose output
 
         // Handle multiplication operations
         if (opCode == Instruction::Mul) {
             if ((constantValue & (constantValue - 1)) == 0) {
                 // If constant is a power of 2, replace multiplication with left shift
                 // x * 2^n => x << n
-                type = "x * 2^2 ==> x << n";
+                type = "x * 2^n ==> x << n";  // Corrected from 2^2 to 2^n
                 newInst = BinaryOperator::Create(
                     Instruction::Shl, variable, ConstantInt::get(inst.getType(), log2(constantValue)));
 
@@ -218,6 +232,7 @@ bool strengthReduction(Instruction &inst) {
             if ((constantValue & (constantValue - 1)) == 0) {
                 // If divisor is a power of 2, replace division with right shift
                 // x / 2^n => x >> n
+                type = "x / 2^n ==> x >> n";  // Added description string
                 newInst = BinaryOperator::Create(
                     Instruction::LShr, variable, ConstantInt::get(inst.getType(), log2(constantValue)));
                 newInst->insertAfter(&inst);
@@ -245,9 +260,12 @@ bool strengthReduction(Instruction &inst) {
 /**
  * Optimizes across multiple instructions by recognizing patterns like:
  * (x op1 c) op2 c where op1 and op2 are inverse operations
- * For example: (x + 5) - 5 = x
+ * For example: (x + 5) - 5 = x or (x * 2) / 2 = x
  *
- * @param Inst The instruction to be optimized
+ * This optimization identifies and eliminates pairs of operations that cancel each other out
+ * when they involve the same constant value.
+ *
+ * @param inst The instruction to be optimized
  * @return true if optimization was applied, false otherwise
  */
 bool multiInstructionOptimization(Instruction &inst) {
@@ -294,8 +312,6 @@ bool multiInstructionOptimization(Instruction &inst) {
             return false;
         }
 
-
-
         // Define pairs of inverse operations
         std::map<unsigned int, unsigned int> opMap;
         opMap[Instruction::Add] = Instruction::Sub;      // Addition and subtraction are inverses
@@ -307,7 +323,8 @@ bool multiInstructionOptimization(Instruction &inst) {
         if (opMap[opCode] == varOpCode) {
             if (LocalOptsVerbose) {
                 outs() << "Applying Multi Instruction optimization on instruction: " << inst << "\n";
-                outs() << "This is because, this instruction " << varInst << "is specular to the modified instruction\n\n";
+                outs() << "This is because, this instruction " << varInst << " is specular to the modified instruction\n\n";
+                // Fixed "specular" to "inverse" or similar term would be more accurate
             }
 
             // If so, we can simplify to just the original variable
@@ -324,8 +341,10 @@ bool multiInstructionOptimization(Instruction &inst) {
 }
 
 /**
- * Apply all optimizations to every instruction in a basic block
- * Also adds metadata to mark which optimizations were applied
+ * Apply all optimizations to every instruction in a basic block.
+ * Attempts to apply algebraic identity, strength reduction, and multi-instruction
+ * optimizations to each instruction. When an optimization is applied, metadata
+ * is attached to mark which optimization was used.
  *
  * @param BB The basic block to optimize
  * @return true if any optimization was applied
@@ -333,6 +352,8 @@ bool multiInstructionOptimization(Instruction &inst) {
 bool runOnBBOptimizations(BasicBlock &BB) {
     MDNode *MD;
     LLVMContext &context = BB.getContext();
+
+    bool isChanged = false;
 
     for (Instruction &inst : BB) {
         if (algebraicIdentityOptimization(inst)) { // Try to apply algebraic identity optimization
@@ -345,6 +366,8 @@ bool runOnBBOptimizations(BasicBlock &BB) {
             );
 
             inst.setMetadata("algebraic", MD);
+
+            isChanged = true;
         } else if (strengthReduction(inst)) { // Try to apply strength reduction optimization
             // Add metadata to mark this instruction as optimized with strength reduction
             MD = MDNode::get(
@@ -355,6 +378,8 @@ bool runOnBBOptimizations(BasicBlock &BB) {
             );
 
             inst.setMetadata("strength", MD);
+
+            isChanged = true;
         } else if (multiInstructionOptimization(inst)) { // Try to apply multi-instruction optimization
             // Add metadata to mark this instruction as optimized with multi-instruction opt
             MD = MDNode::get(
@@ -365,14 +390,18 @@ bool runOnBBOptimizations(BasicBlock &BB) {
             );
 
             inst.setMetadata("multi-instruction", MD);
+
+            isChanged = true;
         }
     }
 
-    return true;
+    return isChanged;
 }
 
 /**
- * Run all optimizations on every basic block in a function
+ * Run all optimizations on every basic block in a function.
+ * Iterates through each basic block and applies the optimization
+ * functions, with verbose output if enabled.
  *
  * @param F The function to optimize
  * @return true if any basic block was transformed
@@ -400,7 +429,9 @@ bool runOnFunction(Function &F) {
 }
 
 /**
- * The main pass entry point - runs optimizations on the entire module
+ * The main pass entry point - runs optimizations on the entire module.
+ * This is called by the LLVM pass manager for each module being processed.
+ * It orchestrates running the optimizations on each function in the module.
  *
  * @param M The module to optimize
  * @param AM The module analysis manager
@@ -418,29 +449,35 @@ PreservedAnalyses LocalOpts::run(Module &M, ModuleAnalysisManager &AM) {
 }
 
 /**
- * Get information about this pass plugin
+ * Get information about this pass plugin.
+ * This creates the necessary information structure for the LLVM pass manager
+ * to recognize and register our optimization pass.
+ *
  * @return PassPluginLibraryInfo struct with plugin details
  */
 PassPluginLibraryInfo getLocalOptsPluginInfo() {
-return {LLVM_PLUGIN_API_VERSION, "LocalOpts", LLVM_VERSION_STRING,
-                [](PassBuilder &PB) {
-                    // Register the pass with the pass builder
-                    PB.registerPipelineParsingCallback(
-                            [](StringRef Name, ModulePassManager &MPM,
-                                    ArrayRef<PassBuilder::PipelineElement>) -> bool {
-                                // Allow the pass to be invoked via -passes=local-opts
-                                if (Name == "local-opts") {
-                                    MPM.addPass(LocalOpts());
-                                    return true;
-                                }
-                                return false;
-                            });
-                }};
+    return {LLVM_PLUGIN_API_VERSION, "LocalOpts", LLVM_VERSION_STRING,
+        [](PassBuilder &PB) {
+            // Register the pass with the pass builder
+            PB.registerPipelineParsingCallback(
+                [](StringRef Name, ModulePassManager &MPM,
+                   ArrayRef<PassBuilder::PipelineElement>) -> bool {
+                    // Allow the pass to be invoked via -passes=local-opts
+                    if (Name == "local-opts") {
+                        MPM.addPass(LocalOpts());
+                        return true;
+                    }
+                    return false;
+                });
+        }};
 }
 
 /**
  * Plugin API entry point - allows opt to recognize the pass
- * when used with -passes=local-opts command line option
+ * when used with -passes=local-opts command line option.
+ *
+ * This is called by LLVM when loading the pass to get information
+ * about it and register it in the pass pipeline.
  *
  * @return PassPluginLibraryInfo for this pass
  */
