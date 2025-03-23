@@ -1,5 +1,14 @@
 #!/bin/bash
-export LLVM_DIR=$1
+if [-z "${LLVM_DIR}"]; then
+    echo "Enter the path to your LLVM bin directory: "
+    read path
+
+    export LLVM_DIR="$path"
+
+    echo "If you want to persistently add LLVM_DIR to your path"
+    echo "modify the .bashrc script"
+fi
+
 
 mkdir build
 cd build
