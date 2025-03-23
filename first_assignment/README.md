@@ -67,6 +67,12 @@ opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts examples/single_f
 
 # With verbose output showing applied optimizations
 opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts -local-opts-verbose examples/single_function.ll -o optimized.ll
+
+# View the optimized output
+llvm-dis optimized.ll -o - | less
+
+# It's possible to use only opt and display the optimized file on stdout
+opt -load-pass-plugin=./build/libLocalOpts.so -passes=local-opts examples/single_function.ll -S
 ```
 
 The `-local-opts-verbose` flag enables detailed output about which optimizations were applied to each instruction, including the specific transformation type.
@@ -79,16 +85,6 @@ The `examples` directory contains several LLVM IR (.ll) files demonstrating diff
 - **Multiple Functions**: Tests the pass across multiple function boundaries
 - **Single Function with Multiple Basic Blocks**: Shows optimizations working across basic blocks
 - **Single Function with Multiple Optimizations**: Demonstrates how different optimization types interact
-
-To run the examples:
-
-```bash
-# Example for single function optimization
-opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts -local-opts-verbose examples/single_function.ll -o optimized.ll
-
-# View the optimized output
-llvm-dis optimized.ll -o - | less
-```
 
 ## Implementation Details
 
