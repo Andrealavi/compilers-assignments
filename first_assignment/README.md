@@ -29,6 +29,10 @@ The project includes an `init.sh` script that configures the build environment:
 
 ```bash
 # Run the setup script
+bash init.sh
+
+# or alternatively
+chmod +x init.sh
 ./init.sh
 
 # This will:
@@ -59,10 +63,10 @@ After successful compilation, the pass can be used with LLVM's `opt` tool:
 
 ```bash
 # Basic usage
-opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts input.ll -o optimized.ll
+opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts examples/single_function.ll -o optimized.ll
 
 # With verbose output showing applied optimizations
-opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts -local-opts-verbose input.ll -o optimized.ll
+opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts -local-opts-verbose examples/single_function.ll -o optimized.ll
 ```
 
 The `-local-opts-verbose` flag enables detailed output about which optimizations were applied to each instruction, including the specific transformation type.
