@@ -324,7 +324,9 @@ bool multiInstructionOptimization(Instruction &inst) {
         if (opMap[opCode] == varOpCode) {
             if (LocalOptsVerbose) {
                 outs() << "Applying Multi Instruction optimization on instruction: " << inst << "\n";
-                outs() << "This is because, this instruction " << varInst << " is specular to the modified instruction\n\n";
+                outs() << "This is because, this instruction '";
+                varInst->print(outs());
+                outs() << "' is specular to the modified instruction\n\n";
                 // Fixed "specular" to "inverse" or similar term would be more accurate
             }
 
