@@ -1,5 +1,5 @@
 #!/bin/bash
-if [-z "${LLVM_DIR}"]; then
+if [ -z "${LLVM_DIR}" ]; then
     echo "Enter the path to your LLVM bin directory (e.g. /usr/lib/llvm-19/bin): "
     read path
 
