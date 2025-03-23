@@ -1,4 +1,5 @@
 #include "LocalOpts.hpp"
+#include <iostream>
 
 using namespace llvm;
 
@@ -410,7 +411,7 @@ bool runOnFunction(Function &F) {
     bool Transformed = false;
 
     if (LocalOptsVerbose) {
-        outs() << "--- OPTIMIZATIONS ---\n\n";
+        outs() << "--- " << "Function " << F.getName() << " OPTIMIZATIONS ---\n\n";
     }
 
     // Iterate over all basic blocks in the function
@@ -438,11 +439,17 @@ bool runOnFunction(Function &F) {
  * @return PreservedAnalyses indicating which analyses are preserved
  */
 PreservedAnalyses LocalOpts::run(Module &M, ModuleAnalysisManager &AM) {
+    bool transformed = false;
+
     // Run optimizations on each function in the module
     for (auto Fiter = M.begin(); Fiter != M.end(); ++Fiter)
-        if (runOnFunction(*Fiter))
-            // If any function was modified, invalidate all analyses
-            return PreservedAnalyses::none();
+        if (runOnFunction(*Fiter)) {
+            transformed = true;
+        }
+
+    if (transformed)
+        // If any function was modified, invalidate all analyses
+        return PreservedAnalyses::none();
 
     // If no changes were made, all analyses are preserved
     return PreservedAnalyses::all();
