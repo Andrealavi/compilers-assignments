@@ -16,6 +16,7 @@
 #include <map>
 #include <string>
 #include <algorithm>
+#include <queue>
 
 namespace llvm {
     class LocalOpts : public PassInfoMixin<LocalOpts> {
