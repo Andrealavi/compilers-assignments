@@ -76,6 +76,7 @@ opt -load-pass-plugin=./build/libLocalOpts.so -passes=local-opts examples/single
 clang++ -O0 -Xclang -disable-O0-optnone -emit-llvm your_file.cpp -S -o your_file.ll # Generates LLVM IR without applying any optimization
 
 opt -passes=mem2reg your_file.ll -S -o your_file.ll
+opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts your_file.ll -o your_file_optimized.ll
 ```
 
 The `-local-opts-verbose` flag enables detailed output about which optimizations were applied to each instruction, including the specific transformation type.
