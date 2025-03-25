@@ -7,6 +7,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/CommandLine.h"
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <map>
 #include <string>
+#include <algorithm>
 
 namespace llvm {
     class LocalOpts : public PassInfoMixin<LocalOpts> {

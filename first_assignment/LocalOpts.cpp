@@ -1,5 +1,4 @@
 #include "LocalOpts.hpp"
-#include <llvm-19/llvm/Support/Casting.h>
 
 using namespace llvm;
 
@@ -26,124 +25,86 @@ static cl::opt<bool> LocalOptsVerbose(
  * @return true if the instruction was optimized, false otherwise
  */
 Instruction* algebraicIdentityOptimization(Instruction &inst) {
+    Value *LHS = nullptr;
+    Value *RHS = nullptr;
+    ConstantInt *C = nullptr;
+
     // Only process binary operators
-    if (inst.isBinaryOp()) {
-        Value *LHS = inst.getOperand(0);  // Left-hand side operand
-        Value *RHS = inst.getOperand(1);  // Right-hand side operand
+    if (
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_ConstantInt(C))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(LHS))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_Value(RHS)))
+    ) {
+        if (isa<Constant>(LHS)) {
+            return nullptr;
+        }
 
         unsigned int opCode = inst.getOpcode();  // Operation code (Add, Sub, etc.)
 
+        int64_t constantValue = 0;
+        if (C) constantValue = C->getSExtValue();
         Value *newValue = nullptr;  // Will hold the simplified value if optimization applies
 
-        std::string identity;  // Stores the description of the applied identity for verbose output
+        std::string identity = "";  // Stores the description of the applied identity for verbose output
 
-        // Case 1: Operands are the same (x op x)
-        if (LHS == RHS) {
-            switch (opCode) {
-                case Instruction::Sub:  // x - x = 0
-                    identity = "x - x = 0";
-                    newValue = Constant::getNullValue(inst.getType());
-                    break;
+        std::vector<int> zeroConstantOps = {
+            Instruction::Add,
+            Instruction::Sub,
+            Instruction::Shl,
+            Instruction::LShr,
+            Instruction::And,
+            Instruction::Xor
+        };
 
-                case Instruction::SDiv:  // x / x = 1 (signed division)
-                    identity = "x / x = 1";
-                    newValue = ConstantInt::get(inst.getType(), 1);
-                    break;
+        std::vector<int> oneConstantOps = {
+            Instruction::Mul,
+            Instruction::UDiv,
+            Instruction::SDiv,
+        };
 
-                case Instruction::UDiv:  // x / x = 1 (unsigned division)
-                    identity = "x / x = 1";
-                    newValue = ConstantInt::get(inst.getType(), 1);
-                    break;
-
-                case Instruction::And:  // x & x = x
-                    identity = "x & x = x";
-                    newValue = LHS;
-                    break;
-
-                case Instruction::Or:  // x | x = x
-                    identity = "x | x = x";
-                    newValue = LHS;
-                    break;
-
-                case Instruction::Xor:  // x ^ x = 0
-                    identity = "x ^ x = 0";
-                    newValue = Constant::getNullValue(inst.getType());
-                    break;
-
-                default:
-                    break;
-            }
+        if (
+            (C && constantValue == 0 && opCode == Instruction::Mul) ||
+            ((LHS == RHS) && (opCode == Instruction::Sub || opCode == Instruction::Xor))
+        ) {
+            newValue = Constant::getNullValue(inst.getType());
+        } else if (
+            (C && constantValue == 0 && std::find(zeroConstantOps.begin(), zeroConstantOps.end(), opCode) != zeroConstantOps.end()) ||
+            (C && constantValue == 1 && std::find(oneConstantOps.begin(), oneConstantOps.end(), opCode) != oneConstantOps.end()) ||
+            ((LHS == RHS) && (opCode == Instruction::And || opCode == Instruction::Or))
+        ) {
+            newValue = LHS;
+        } else if ((LHS == RHS) && (opCode == Instruction::SDiv || opCode == Instruction::UDiv)) {
+                newValue = ConstantInt::get(inst.getType(), 1);
+        } else {
+            return nullptr;
         }
-        // Case 2: One operand is a constant
-        else if (ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : isa<ConstantInt>(RHS) ? dyn_cast<ConstantInt>(RHS) : nullptr) {
-            if (!constant) {
-                return nullptr;
-            }
 
-            // Determine which operand is the variable
-            Value *variable = constant == LHS ? RHS : LHS;
+        if (LocalOptsVerbose) {
+            std::map<int, std::string> constantIdentities {
+                {Instruction::Add, "x + 0 = x"},
+                {Instruction::Sub, "x - 0 = x"},
+                {Instruction::Mul, "x * 0 = 0"},
+                {Instruction::Shl, "x << 0 = x"},
+                {Instruction::LShr, "x >> 0 = x"},
+                {Instruction::Xor, "x ^ 0 = x"},
+                {Instruction::And, "x & 0 = 0"},
+                {Instruction::SDiv - Instruction::UDiv, "x / 1 = x"}
+            };
 
-            int64_t constantValue = constant->getSExtValue();
+            std::map<int, std::string> nonConstantIdentities {
+                {Instruction::Sub, "x - x = 0"},
+                {Instruction::And, "x & x = x"},
+                {Instruction::Or, "x | x = x"},
+                {Instruction::Xor, "x ^ x = 0"},
+                {Instruction::SDiv - Instruction::UDiv, "x / 1 = x"}
+            };
 
-            // Special case for constant value 0
-            if (constantValue == 0) {
-                switch (opCode) {
-                    case Instruction::Add:  // x + 0 = x
-                        identity = "x + 0 = x";
-                        newValue = variable;
-                        break;
-
-                    case Instruction::Sub:  // x - 0 = x or 0 - x = -x
-                        if (constant == RHS) {
-                            identity = "x - 0 = x";
-                            newValue = variable;
-                        } else {
-                            identity = "0 - x = -x";
-                            // Create negation instruction
-                            newValue = BinaryOperator::CreateNeg(RHS);
-                        }
-                        break;
-
-                    case Instruction::Mul:  // x * 0 = 0
-                        identity = "x * 0 = 0";
-                        newValue = Constant::getNullValue(inst.getType());
-                        break;
-
-                    case Instruction::Shl:  // x << 0 = x
-                        identity = "x << 0 = x";
-                        newValue = variable;
-                        break;
-
-                    case Instruction::LShr:  // x >> 0 = x
-                        identity = "x >> 0 = x";
-                        newValue = variable;
-                        break;
-
-                    default:
-                        break;
-                }
-            }
-            // Special case for constant value 1
-            else if (constantValue == 1) {
-                switch (opCode) {
-                    case Instruction::Mul:  // x * 1 = x
-                        identity = "x * 1 = x";
-                        newValue = variable;
-                        break;
-
-                    case Instruction::UDiv:  // x / 1 = x (unsigned)
-                        identity = "x / 1 = x";
-                        newValue = variable;
-                        break;
-
-                    case Instruction::SDiv:  // x / 1 = x (signed)
-                        identity = "x / 1 = x";
-                        newValue = variable;
-                        break;
-
-                    default:
-                        break;
-                }
+            if (C && C->getSExtValue() == 0 && opCode == Instruction::Mul) {
+                identity = "x * 0 = 0";
+            } else if (C) {
+                identity = constantIdentities[opCode];
+            } else {
+                identity = nonConstantIdentities[opCode];
             }
         }
 
@@ -156,9 +117,6 @@ Instruction* algebraicIdentityOptimization(Instruction &inst) {
 
             // Replace all uses of the original instruction with the new optimized value
             inst.replaceAllUsesWith(newValue);
-
-            // Note: The instruction is not actually removed from the parent
-            // This would require: inst.eraseFromParent();
 
             return dyn_cast<Instruction>(newValue);
         }
