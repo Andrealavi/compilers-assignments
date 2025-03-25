@@ -25,124 +25,88 @@ static cl::opt<bool> LocalOptsVerbose(
  * @return true if the instruction was optimized, false otherwise
  */
 bool algebraicIdentityOptimization(Instruction &inst) {
+    Value *LHS = nullptr;
+    Value *RHS = nullptr;
+    ConstantInt *C = nullptr;
+
     // Only process binary operators
-    if (inst.isBinaryOp()) {
-        Value *LHS = inst.getOperand(0);  // Left-hand side operand
-        Value *RHS = inst.getOperand(1);  // Right-hand side operand
+    if (
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_ConstantInt(C))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(LHS))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_Value(RHS)))
+    ) {
+        if (isa<Constant>(LHS)) {
+            return false;
+        }
 
         unsigned int opCode = inst.getOpcode();  // Operation code (Add, Sub, etc.)
 
+        int64_t constantValue = 0;
+        if (C) constantValue = C->getSExtValue();
         Value *newValue = nullptr;  // Will hold the simplified value if optimization applies
 
-        std::string identity;  // Stores the description of the applied identity for verbose output
+        std::string identity = "";  // Stores the description of the applied identity for verbose output
 
-        // Case 1: Operands are the same (x op x)
-        if (LHS == RHS) {
-            switch (opCode) {
-                case Instruction::Sub:  // x - x = 0
-                    identity = "x - x = 0";
-                    newValue = Constant::getNullValue(inst.getType());
-                    break;
+        std::vector<int> zeroConstantOps = {
+            Instruction::Add,
+            Instruction::Sub,
+            Instruction::Shl,
+            Instruction::LShr,
+            Instruction::And,
+            Instruction::Xor
+        };
 
-                case Instruction::SDiv:  // x / x = 1 (signed division)
-                    identity = "x / x = 1";
-                    newValue = ConstantInt::get(inst.getType(), 1);
-                    break;
+        std::vector<int> oneConstantOps = {
+            Instruction::Mul,
+            Instruction::UDiv,
+            Instruction::SDiv,
+        };
 
-                case Instruction::UDiv:  // x / x = 1 (unsigned division)
-                    identity = "x / x = 1";
-                    newValue = ConstantInt::get(inst.getType(), 1);
-                    break;
-
-                case Instruction::And:  // x & x = x
-                    identity = "x & x = x";
-                    newValue = LHS;
-                    break;
-
-                case Instruction::Or:  // x | x = x
-                    identity = "x | x = x";
-                    newValue = LHS;
-                    break;
-
-                case Instruction::Xor:  // x ^ x = 0
-                    identity = "x ^ x = 0";
-                    newValue = Constant::getNullValue(inst.getType());
-                    break;
-
-                default:
-                    break;
-            }
+        if (
+            (C && constantValue == 0 && opCode == Instruction::Mul) ||
+            ((LHS == RHS) && (opCode == Instruction::Sub || opCode == Instruction::Xor))
+        ) {
+            newValue = Constant::getNullValue(inst.getType());
+        } else if (
+            (C && constantValue == 0 && std::find(zeroConstantOps.begin(), zeroConstantOps.end(), opCode) != zeroConstantOps.end()) ||
+            (C && constantValue == 1 && std::find(oneConstantOps.begin(), oneConstantOps.end(), opCode) != oneConstantOps.end()) ||
+            ((LHS == RHS) && (opCode == Instruction::And || opCode == Instruction::Or))
+        ) {
+            newValue = LHS;
+        } else if ((LHS == RHS) && (opCode == Instruction::SDiv || opCode == Instruction::UDiv)) {
+                newValue = ConstantInt::get(inst.getType(), 1);
+        } else {
+            return false;
         }
-        // Case 2: One operand is a constant
-        else if (ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : isa<ConstantInt>(RHS) ? dyn_cast<ConstantInt>(RHS) : nullptr) {
-            if (!constant) {
-                return false;
-            }
 
-            // Determine which operand is the variable
-            Value *variable = constant == LHS ? RHS : LHS;
+        if (LocalOptsVerbose) {
+            std::map<int, std::string> constantIdentities {
+                {Instruction::Add, "x + 0 = x"},
+                {Instruction::Sub, "x - 0 = x"},
+                {Instruction::Mul, "x * 0 = 0"},
+                {Instruction::Shl, "x << 0 = x"},
+                {Instruction::LShr, "x >> 0 = x"},
+                {Instruction::Xor, "x ^ 0 = x"},
+                {Instruction::And, "x & 0 = 0"},
+                {Instruction::SDiv, "x / 1 = x"},
+                {Instruction::UDiv, "x / 1 = x"}
+            };
 
-            int64_t constantValue = constant->getSExtValue();
+            std::map<int, std::string> nonConstantIdentities {
+                {Instruction::Sub, "x - x = 0"},
+                {Instruction::And, "x & x = x"},
+                {Instruction::Or, "x | x = x"},
+                {Instruction::Xor, "x ^ x = 0"},
+                {Instruction::SDiv, "x / 1 = x"},
+                {Instruction::UDiv, "x / 1 = x"}
+            };
 
-            // Special case for constant value 0
-            if (constantValue == 0) {
-                switch (opCode) {
-                    case Instruction::Add:  // x + 0 = x
-                        identity = "x + 0 = x";
-                        newValue = variable;
-                        break;
-
-                    case Instruction::Sub:  // x - 0 = x or 0 - x = -x
-                        if (constant == RHS) {
-                            identity = "x - 0 = x";
-                            newValue = variable;
-                        } else {
-                            identity = "0 - x = -x";
-                            // Create negation instruction
-                            newValue = BinaryOperator::CreateNeg(RHS);
-                        }
-                        break;
-
-                    case Instruction::Mul:  // x * 0 = 0
-                        identity = "x * 0 = 0";
-                        newValue = Constant::getNullValue(inst.getType());
-                        break;
-
-                    case Instruction::Shl:  // x << 0 = x
-                        identity = "x << 0 = x";
-                        newValue = variable;
-                        break;
-
-                    case Instruction::LShr:  // x >> 0 = x
-                        identity = "x >> 0 = x";
-                        newValue = variable;
-                        break;
-
-                    default:
-                        break;
-                }
-            }
-            // Special case for constant value 1
-            else if (constantValue == 1) {
-                switch (opCode) {
-                    case Instruction::Mul:  // x * 1 = x
-                        identity = "x * 1 = x";
-                        newValue = variable;
-                        break;
-
-                    case Instruction::UDiv:  // x / 1 = x (unsigned)
-                        identity = "x / 1 = x";
-                        newValue = variable;
-                        break;
-
-                    case Instruction::SDiv:  // x / 1 = x (signed)
-                        identity = "x / 1 = x";
-                        newValue = variable;
-                        break;
-
-                    default:
-                        break;
-                }
+            if (C && C->getSExtValue() == 0 && opCode == Instruction::Mul) {
+                identity = "x * 0 = 0";
+            } else if (C) {
+                identity = constantIdentities[opCode];
+            } else {
+                identity = nonConstantIdentities[opCode];
             }
         }
 
@@ -155,9 +119,6 @@ bool algebraicIdentityOptimization(Instruction &inst) {
 
             // Replace all uses of the original instruction with the new optimized value
             inst.replaceAllUsesWith(newValue);
-
-            // Note: The instruction is not actually removed from the parent
-            // This would require: inst.eraseFromParent();
 
             return true;
         }
@@ -180,50 +141,33 @@ bool algebraicIdentityOptimization(Instruction &inst) {
  * @return true if optimization was applied, false otherwise
  */
 bool strengthReduction(Instruction &inst) {
-    if (inst.isBinaryOp()) {
-        Value *LHS = inst.getOperand(0);
-        Value *RHS = inst.getOperand(1);
+    Value *V = nullptr;
+    ConstantInt *C = nullptr;
 
+    if (
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(V), PatternMatch::m_ConstantInt(C))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(V)))
+    ) {
         unsigned int opCode = inst.getOpcode();
 
-        // Get the constant operand, if any
-        ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : dyn_cast<ConstantInt>(RHS);
-
-        if (!constant) {
-            return false;  // No constant operand, can't apply strength reduction
-        }
-
-        // Get the variable operand
-        Value *variable = (constant == LHS) ? RHS : LHS;
-
         Instruction *newInst = nullptr;
-
-        int64_t constantValue = constant->getSExtValue();
+        int64_t constantValue = C->getSExtValue();
 
         std::string type;  // Stores the description of the transformation for verbose output
 
         // Handle multiplication operations
         if (opCode == Instruction::Mul) {
-            if ((constantValue & (constantValue - 1)) == 0) {
-                // If constant is a power of 2, replace multiplication with left shift
-                // x * 2^n => x << n
-                type = "x * 2^n ==> x << n";  // Corrected from 2^2 to 2^n
-                newInst = BinaryOperator::Create(
-                    Instruction::Shl, variable, ConstantInt::get(inst.getType(), log2(constantValue)));
+            type = "x * 2^n ==> x << n";
+            Instruction *newInstShift = BinaryOperator::Create(
+                Instruction::Shl, V, ConstantInt::get(inst.getType(), ceil(log2(constantValue))));
 
-                newInst->insertAfter(&inst);
-            } else {
-                // For other constants, try to approximate using shifts and subtractions
-                // x * c => (x << ceil(log2(c))) - x
+            newInstShift->insertAfter(&inst);
+
+            if ((constantValue & (constantValue - 1)) != 0) {
                 type = "x * c ==> x << ceil(log2(c)) - x";
-                Instruction *newInstShift = BinaryOperator::Create(
-                    Instruction::Shl, variable, ConstantInt::get(inst.getType(), ceil(log2(constantValue))));
-
-                newInstShift->insertAfter(&inst);
 
                 newInst = BinaryOperator::Create(
-                    Instruction::Sub, newInstShift, variable);
-
+                    Instruction::Sub, newInstShift, V);
                 newInst->insertAfter(newInstShift);
             }
         }
@@ -234,7 +178,7 @@ bool strengthReduction(Instruction &inst) {
                 // x / 2^n => x >> n
                 type = "x / 2^n ==> x >> n";  // Added description string
                 newInst = BinaryOperator::Create(
-                    Instruction::LShr, variable, ConstantInt::get(inst.getType(), log2(constantValue)));
+                    Instruction::LShr, V, ConstantInt::get(inst.getType(), log2(constantValue)));
                 newInst->insertAfter(&inst);
             }
         }
@@ -247,8 +191,6 @@ bool strengthReduction(Instruction &inst) {
             }
 
             inst.replaceAllUsesWith(newInst);
-            // Note: The instruction is not actually removed
-            // This would require: inst.eraseFromParent();
 
             return true;
         }
@@ -269,69 +211,93 @@ bool strengthReduction(Instruction &inst) {
  * @return true if optimization was applied, false otherwise
  */
 bool multiInstructionOptimization(Instruction &inst) {
-    if (inst.isBinaryOp()) {
-        Value* LHS = inst.getOperand(0);
-        Value* RHS = inst.getOperand(1);
+    Value *V = nullptr;
+    ConstantInt *C = nullptr;
+
+    if (
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(V), PatternMatch::m_ConstantInt(C))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(V)))
+    ) {
         unsigned int opCode = inst.getOpcode();
+        int64_t constantValue = C->getSExtValue();
 
-        // Find the constant operand, if any
-        ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : dyn_cast<ConstantInt>(RHS);
-        if (!constant) {
-            return false;  // No constant, can't proceed with this optimization
-        }
-
-        int64_t constantValue = constant->getZExtValue();
-
-        // Identify the variable operand
-        Value *variable = (constant == LHS) ? RHS : LHS;
-        Instruction *varInst = dyn_cast<Instruction>(variable);
-
+        Instruction *varInst = dyn_cast<Instruction>(V);
         // Ensure the variable operand is also a binary instruction
         if (!varInst || !varInst->isBinaryOp()) {
             return false;
         }
 
-        // Examine the operands of the nested instruction
-        Value *varLHS = varInst->getOperand(0);
-        Value *varRHS = varInst->getOperand(1);
-        unsigned int varOpCode = varInst->getOpcode();
-
-        // Find the constant operand in the nested instruction, if any
-        ConstantInt *varConstant = isa<ConstantInt>(varLHS) ? dyn_cast<ConstantInt>(varLHS) : dyn_cast<ConstantInt>(varRHS);
-        if (!varConstant) {
-            return false;  // No constant in nested instruction
-        }
-
-        int64_t varConstantValue = varConstant->getZExtValue();
-
-        // Get the variable from the nested instruction
-        Value *varVariable = (varConstant == varLHS) ? varRHS : varLHS;
-
-        // Constants must be the same value for this optimization
-        if (varConstantValue != constantValue) {
-            return false;
-        }
-
         // Define pairs of inverse operations
-        std::map<unsigned int, unsigned int> opMap;
-        opMap[Instruction::Add] = Instruction::Sub;      // Addition and subtraction are inverses
-        opMap[Instruction::Sub] = Instruction::Add;      // Subtraction and addition are inverses
-        opMap[Instruction::Mul] = Instruction::SDiv;     // Multiplication and division are inverses
-        opMap[Instruction::SDiv] = Instruction::Mul;     // Division and multiplication are inverses
+        std::map<int, int> opMap {
+            {Instruction::Add, Instruction::Sub},
+            {Instruction::Sub, Instruction::Add},
+            {Instruction::Mul, Instruction::SDiv},
+            {Instruction::SDiv, Instruction::Mul}
+        };
+
+        std::queue<Instruction*> worklist;
+        worklist.push(varInst);
+
+        std::vector<Instruction*> specular_inst;
+
+        Value* varV = nullptr;
+        ConstantInt* varC = nullptr;
+        bool canOptimize = false;
+
+        while (!worklist.empty()) {
+            varInst = worklist.front();
+            worklist.pop();
+            int varOpcode = varInst->getOpcode();
+
+            if (
+                (PatternMatch::match(varInst, PatternMatch::m_BinOp(PatternMatch::m_Value(varV), PatternMatch::m_ConstantInt(varC))) ||
+                PatternMatch::match(varInst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(varC), PatternMatch::m_Value(varV)))) &&
+                opMap[opCode] == varOpcode
+            ) {
+
+                if (LocalOptsVerbose) {
+                    outs() << "Found potential inverse operation with constant: " << varC->getSExtValue() << "\n";
+                }
+
+                if ((constantValue - varC->getSExtValue()) == 0 || constantValue == 0) {
+                    canOptimize = true;
+                } else {
+                    int64_t temp = constantValue - varC->getSExtValue();
+
+                    // Multiplications and Divisions are not considered
+                    // since with strength reduction optimization will be
+                    // too difficult to find possible optimizations
+
+                    if (temp > 0) {
+                        if (Instruction *vInst = dyn_cast<Instruction>(varV)) {
+                            worklist.push(vInst);
+                            specular_inst.push_back(vInst);
+                            constantValue = temp;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+            }
+        }
 
         // Check if the current operation and the nested operation are inverse operations
-        if (opMap[opCode] == varOpCode) {
+        if (canOptimize) {
             if (LocalOptsVerbose) {
                 outs() << "Applying Multi Instruction optimization on instruction: " << inst << "\n";
-                outs() << "This is because, this instruction '";
-                varInst->print(outs());
-                outs() << "' is specular to the modified instruction\n\n";
+                outs() << "This is because, these instructions '";
+
+                for (Instruction *inst : specular_inst) {
+                    inst->print(outs());
+                }
+
+                outs() << "' are specular to the modified instruction\n\n";
                 // Fixed "specular" to "inverse" or similar term would be more accurate
             }
 
             // If so, we can simplify to just the original variable
             // For example: (x + 5) - 5 = x or (x * 2) / 2 = x
-            inst.replaceAllUsesWith(varVariable);
+            inst.replaceAllUsesWith(varV);
             // Note: Instruction is not actually removed
             // This would require: inst.eraseFromParent();
 
@@ -352,49 +318,45 @@ bool multiInstructionOptimization(Instruction &inst) {
  * @return true if any optimization was applied
  */
 bool runOnBBOptimizations(BasicBlock &BB) {
-    MDNode *MD;
-    LLVMContext &context = BB.getContext();
+    std::vector<Instruction*> instructionToRemove;
 
     bool isChanged = false;
 
     for (Instruction &inst : BB) {
-        if (algebraicIdentityOptimization(inst)) { // Try to apply algebraic identity optimization
-            // Add metadata to mark this instruction as optimized with algebraic identity
-            MD = MDNode::get(
-                context,
-                MDString::get(
-                    context,
-                    "Applied an algebraic identity optimization")
-            );
-
-            inst.setMetadata("algebraic", MD);
-
-            isChanged = true;
-        } else if (strengthReduction(inst)) { // Try to apply strength reduction optimization
-            // Add metadata to mark this instruction as optimized with strength reduction
-            MD = MDNode::get(
-                context,
-                MDString::get(
-                    context,
-                    "Applied a strength reduction optimization")
-            );
-
-            inst.setMetadata("strength", MD);
-
-            isChanged = true;
-        } else if (multiInstructionOptimization(inst)) { // Try to apply multi-instruction optimization
-            // Add metadata to mark this instruction as optimized with multi-instruction opt
-            MD = MDNode::get(
-                context,
-                MDString::get(
-                    context,
-                    "Applied a multi instruction optimization")
-            );
-
-            inst.setMetadata("multi-instruction", MD);
-
+        if (
+            algebraicIdentityOptimization(inst) ||
+            strengthReduction(inst) ||
+            multiInstructionOptimization(inst)
+        ) {
+            instructionToRemove.push_back(&inst);
             isChanged = true;
         }
+    }
+
+    /*
+    This code could be used to perform Dead Code Elimination but it works
+    too well for our purpose, therefore it is better to use a simpler
+    approach that just removes the optimized instructions.
+
+    for (Instruction &inst : BB) {
+        if (inst.isSafeToRemove()) {
+            if (LocalOptsVerbose) {
+                outs() << "Removing instruction: " << inst << "\n";
+            }
+
+            inst->eraseFromParent();
+        };
+    }
+    */
+
+    for (Instruction *inst : instructionToRemove) {
+        if (LocalOptsVerbose) {
+            outs() << "Removing instruction: ";
+            inst->print(outs());
+            outs() << "\n";
+        }
+
+        inst->eraseFromParent();
     }
 
     return isChanged;
