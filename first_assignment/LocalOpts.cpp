@@ -1,4 +1,5 @@
 #include "LocalOpts.hpp"
+#include <llvm-19/llvm/Support/Casting.h>
 
 using namespace llvm;
 
@@ -24,7 +25,7 @@ static cl::opt<bool> LocalOptsVerbose(
  * @param inst The instruction to be optimized
  * @return true if the instruction was optimized, false otherwise
  */
-bool algebraicIdentityOptimization(Instruction &inst) {
+Instruction* algebraicIdentityOptimization(Instruction &inst) {
     // Only process binary operators
     if (inst.isBinaryOp()) {
         Value *LHS = inst.getOperand(0);  // Left-hand side operand
@@ -76,7 +77,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
         // Case 2: One operand is a constant
         else if (ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : isa<ConstantInt>(RHS) ? dyn_cast<ConstantInt>(RHS) : nullptr) {
             if (!constant) {
-                return false;
+                return nullptr;
             }
 
             // Determine which operand is the variable
@@ -159,11 +160,11 @@ bool algebraicIdentityOptimization(Instruction &inst) {
             // Note: The instruction is not actually removed from the parent
             // This would require: inst.eraseFromParent();
 
-            return true;
+            return dyn_cast<Instruction>(newValue);
         }
     }
 
-    return false;
+    return nullptr;
 }
 
 /**
@@ -179,7 +180,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
  * @param inst The instruction to be optimized
  * @return true if optimization was applied, false otherwise
  */
-bool strengthReduction(Instruction &inst) {
+Instruction* strengthReduction(Instruction &inst) {
     if (inst.isBinaryOp()) {
         Value *LHS = inst.getOperand(0);
         Value *RHS = inst.getOperand(1);
@@ -190,7 +191,7 @@ bool strengthReduction(Instruction &inst) {
         ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : dyn_cast<ConstantInt>(RHS);
 
         if (!constant) {
-            return false;  // No constant operand, can't apply strength reduction
+            return nullptr;  // No constant operand, can't apply strength reduction
         }
 
         // Get the variable operand
@@ -250,11 +251,11 @@ bool strengthReduction(Instruction &inst) {
             // Note: The instruction is not actually removed
             // This would require: inst.eraseFromParent();
 
-            return true;
+            return newInst;
         }
     }
 
-    return false;
+    return nullptr;
 }
 
 /**
@@ -268,7 +269,7 @@ bool strengthReduction(Instruction &inst) {
  * @param inst The instruction to be optimized
  * @return true if optimization was applied, false otherwise
  */
-bool multiInstructionOptimization(Instruction &inst) {
+Instruction* multiInstructionOptimization(Instruction &inst) {
     if (inst.isBinaryOp()) {
         Value* LHS = inst.getOperand(0);
         Value* RHS = inst.getOperand(1);
@@ -277,7 +278,7 @@ bool multiInstructionOptimization(Instruction &inst) {
         // Find the constant operand, if any
         ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : dyn_cast<ConstantInt>(RHS);
         if (!constant) {
-            return false;  // No constant, can't proceed with this optimization
+            return nullptr;  // No constant, can't proceed with this optimization
         }
 
         int64_t constantValue = constant->getZExtValue();
@@ -288,7 +289,7 @@ bool multiInstructionOptimization(Instruction &inst) {
 
         // Ensure the variable operand is also a binary instruction
         if (!varInst || !varInst->isBinaryOp()) {
-            return false;
+            return nullptr;
         }
 
         // Examine the operands of the nested instruction
@@ -299,7 +300,7 @@ bool multiInstructionOptimization(Instruction &inst) {
         // Find the constant operand in the nested instruction, if any
         ConstantInt *varConstant = isa<ConstantInt>(varLHS) ? dyn_cast<ConstantInt>(varLHS) : dyn_cast<ConstantInt>(varRHS);
         if (!varConstant) {
-            return false;  // No constant in nested instruction
+            return nullptr;  // No constant in nested instruction
         }
 
         int64_t varConstantValue = varConstant->getZExtValue();
@@ -309,7 +310,7 @@ bool multiInstructionOptimization(Instruction &inst) {
 
         // Constants must be the same value for this optimization
         if (varConstantValue != constantValue) {
-            return false;
+            return nullptr;
         }
 
         // Define pairs of inverse operations
@@ -335,11 +336,11 @@ bool multiInstructionOptimization(Instruction &inst) {
             // Note: Instruction is not actually removed
             // This would require: inst.eraseFromParent();
 
-            return true;
+            return dyn_cast<Instruction>(varVariable);
         }
     }
 
-    return false;
+    return nullptr;
 }
 
 /**
@@ -355,10 +356,12 @@ bool runOnBBOptimizations(BasicBlock &BB) {
     MDNode *MD;
     LLVMContext &context = BB.getContext();
 
+    std::vector<Instruction*> instructionToRemove;
+
     bool isChanged = false;
 
     for (Instruction &inst : BB) {
-        if (algebraicIdentityOptimization(inst)) { // Try to apply algebraic identity optimization
+        if (Instruction* newInst = algebraicIdentityOptimization(inst)) { // Try to apply algebraic identity optimization
             // Add metadata to mark this instruction as optimized with algebraic identity
             MD = MDNode::get(
                 context,
@@ -367,10 +370,11 @@ bool runOnBBOptimizations(BasicBlock &BB) {
                     "Applied an algebraic identity optimization")
             );
 
-            inst.setMetadata("algebraic", MD);
+            newInst->setMetadata("algebraic", MD);
 
+            instructionToRemove.push_back(&inst);
             isChanged = true;
-        } else if (strengthReduction(inst)) { // Try to apply strength reduction optimization
+        } else if (Instruction* newInst = strengthReduction(inst)) { // Try to apply strength reduction optimization
             // Add metadata to mark this instruction as optimized with strength reduction
             MD = MDNode::get(
                 context,
@@ -379,10 +383,11 @@ bool runOnBBOptimizations(BasicBlock &BB) {
                     "Applied a strength reduction optimization")
             );
 
-            inst.setMetadata("strength", MD);
+            newInst->setMetadata("strength", MD);
 
+            instructionToRemove.push_back(&inst);
             isChanged = true;
-        } else if (multiInstructionOptimization(inst)) { // Try to apply multi-instruction optimization
+        } else if (Instruction* newInst = multiInstructionOptimization(inst)) { // Try to apply multi-instruction optimization
             // Add metadata to mark this instruction as optimized with multi-instruction opt
             MD = MDNode::get(
                 context,
@@ -391,10 +396,15 @@ bool runOnBBOptimizations(BasicBlock &BB) {
                     "Applied a multi instruction optimization")
             );
 
-            inst.setMetadata("multi-instruction", MD);
+            newInst->setMetadata("multi-instruction", MD);
 
+            instructionToRemove.push_back(&inst);
             isChanged = true;
         }
+    }
+
+    for (Instruction *inst : instructionToRemove) {
+        inst->eraseFromParent();
     }
 
     return isChanged;
