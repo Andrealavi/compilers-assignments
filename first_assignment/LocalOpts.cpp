@@ -1,5 +1,4 @@
 #include "LocalOpts.hpp"
-#include <iostream>
 
 using namespace llvm;
 
@@ -89,7 +88,8 @@ bool algebraicIdentityOptimization(Instruction &inst) {
                 {Instruction::LShr, "x >> 0 = x"},
                 {Instruction::Xor, "x ^ 0 = x"},
                 {Instruction::And, "x & 0 = 0"},
-                {Instruction::SDiv - Instruction::UDiv, "x / 1 = x"}
+                {Instruction::SDiv, "x / 1 = x"},
+                {Instruction::UDiv, "x / 1 = x"}
             };
 
             std::map<int, std::string> nonConstantIdentities {
@@ -97,7 +97,8 @@ bool algebraicIdentityOptimization(Instruction &inst) {
                 {Instruction::And, "x & x = x"},
                 {Instruction::Or, "x | x = x"},
                 {Instruction::Xor, "x ^ x = 0"},
-                {Instruction::SDiv - Instruction::UDiv, "x / 1 = x"}
+                {Instruction::SDiv, "x / 1 = x"},
+                {Instruction::UDiv, "x / 1 = x"}
             };
 
             if (C && C->getSExtValue() == 0 && opCode == Instruction::Mul) {
@@ -210,69 +211,93 @@ bool strengthReduction(Instruction &inst) {
  * @return true if optimization was applied, false otherwise
  */
 bool multiInstructionOptimization(Instruction &inst) {
-    if (inst.isBinaryOp()) {
-        Value* LHS = inst.getOperand(0);
-        Value* RHS = inst.getOperand(1);
+    Value *V = nullptr;
+    ConstantInt *C = nullptr;
+
+    if (
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(V), PatternMatch::m_ConstantInt(C))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(V)))
+    ) {
         unsigned int opCode = inst.getOpcode();
+        int64_t constantValue = C->getSExtValue();
 
-        // Find the constant operand, if any
-        ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : dyn_cast<ConstantInt>(RHS);
-        if (!constant) {
-            return false;  // No constant, can't proceed with this optimization
-        }
-
-        int64_t constantValue = constant->getZExtValue();
-
-        // Identify the variable operand
-        Value *variable = (constant == LHS) ? RHS : LHS;
-        Instruction *varInst = dyn_cast<Instruction>(variable);
-
+        Instruction *varInst = dyn_cast<Instruction>(V);
         // Ensure the variable operand is also a binary instruction
         if (!varInst || !varInst->isBinaryOp()) {
             return false;
         }
 
-        // Examine the operands of the nested instruction
-        Value *varLHS = varInst->getOperand(0);
-        Value *varRHS = varInst->getOperand(1);
-        unsigned int varOpCode = varInst->getOpcode();
-
-        // Find the constant operand in the nested instruction, if any
-        ConstantInt *varConstant = isa<ConstantInt>(varLHS) ? dyn_cast<ConstantInt>(varLHS) : dyn_cast<ConstantInt>(varRHS);
-        if (!varConstant) {
-            return false;  // No constant in nested instruction
-        }
-
-        int64_t varConstantValue = varConstant->getZExtValue();
-
-        // Get the variable from the nested instruction
-        Value *varVariable = (varConstant == varLHS) ? varRHS : varLHS;
-
-        // Constants must be the same value for this optimization
-        if (varConstantValue != constantValue) {
-            return false;
-        }
-
         // Define pairs of inverse operations
-        std::map<unsigned int, unsigned int> opMap;
-        opMap[Instruction::Add] = Instruction::Sub;      // Addition and subtraction are inverses
-        opMap[Instruction::Sub] = Instruction::Add;      // Subtraction and addition are inverses
-        opMap[Instruction::Mul] = Instruction::SDiv;     // Multiplication and division are inverses
-        opMap[Instruction::SDiv] = Instruction::Mul;     // Division and multiplication are inverses
+        std::map<int, int> opMap {
+            {Instruction::Add, Instruction::Sub},
+            {Instruction::Sub, Instruction::Add},
+            {Instruction::Mul, Instruction::SDiv},
+            {Instruction::SDiv, Instruction::Mul}
+        };
+
+        std::queue<Instruction*> worklist;
+        worklist.push(varInst);
+
+        std::vector<Instruction*> specular_inst;
+
+        Value* varV = nullptr;
+        ConstantInt* varC = nullptr;
+        bool canOptimize = false;
+
+        while (!worklist.empty()) {
+            varInst = worklist.front();
+            worklist.pop();
+            int varOpcode = varInst->getOpcode();
+
+            if (
+                (PatternMatch::match(varInst, PatternMatch::m_BinOp(PatternMatch::m_Value(varV), PatternMatch::m_ConstantInt(varC))) ||
+                PatternMatch::match(varInst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(varC), PatternMatch::m_Value(varV)))) &&
+                opMap[opCode] == varOpcode
+            ) {
+
+                if (LocalOptsVerbose) {
+                    outs() << "Found potential inverse operation with constant: " << varC->getSExtValue() << "\n";
+                }
+
+                if ((constantValue - varC->getSExtValue()) == 0 || constantValue == 0) {
+                    canOptimize = true;
+                } else {
+                    int64_t temp = constantValue - varC->getSExtValue();
+
+                    // Multiplications and Divisions are not considered
+                    // since with strength reduction optimization will be
+                    // too difficult to find possible optimizations
+
+                    if (temp > 0) {
+                        if (Instruction *vInst = dyn_cast<Instruction>(varV)) {
+                            worklist.push(vInst);
+                            specular_inst.push_back(vInst);
+                            constantValue = temp;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+            }
+        }
 
         // Check if the current operation and the nested operation are inverse operations
-        if (opMap[opCode] == varOpCode) {
+        if (canOptimize) {
             if (LocalOptsVerbose) {
                 outs() << "Applying Multi Instruction optimization on instruction: " << inst << "\n";
-                outs() << "This is because, this instruction '";
-                varInst->print(outs());
-                outs() << "' is specular to the modified instruction\n\n";
+                outs() << "This is because, these instructions '";
+
+                for (Instruction *inst : specular_inst) {
+                    inst->print(outs());
+                }
+
+                outs() << "' are specular to the modified instruction\n\n";
                 // Fixed "specular" to "inverse" or similar term would be more accurate
             }
 
             // If so, we can simplify to just the original variable
             // For example: (x + 5) - 5 = x or (x * 2) / 2 = x
-            inst.replaceAllUsesWith(varVariable);
+            inst.replaceAllUsesWith(varV);
             // Note: Instruction is not actually removed
             // This would require: inst.eraseFromParent();
 
