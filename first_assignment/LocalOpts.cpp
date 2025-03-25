@@ -140,50 +140,33 @@ bool algebraicIdentityOptimization(Instruction &inst) {
  * @return true if optimization was applied, false otherwise
  */
 bool strengthReduction(Instruction &inst) {
-    if (inst.isBinaryOp()) {
-        Value *LHS = inst.getOperand(0);
-        Value *RHS = inst.getOperand(1);
+    Value *V = nullptr;
+    ConstantInt *C = nullptr;
 
+    if (
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(V), PatternMatch::m_ConstantInt(C))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(V)))
+    ) {
         unsigned int opCode = inst.getOpcode();
 
-        // Get the constant operand, if any
-        ConstantInt *constant = isa<ConstantInt>(LHS) ? dyn_cast<ConstantInt>(LHS) : dyn_cast<ConstantInt>(RHS);
-
-        if (!constant) {
-            return false;  // No constant operand, can't apply strength reduction
-        }
-
-        // Get the variable operand
-        Value *variable = (constant == LHS) ? RHS : LHS;
-
         Instruction *newInst = nullptr;
-
-        int64_t constantValue = constant->getSExtValue();
+        int64_t constantValue = C->getSExtValue();
 
         std::string type;  // Stores the description of the transformation for verbose output
 
         // Handle multiplication operations
         if (opCode == Instruction::Mul) {
-            if ((constantValue & (constantValue - 1)) == 0) {
-                // If constant is a power of 2, replace multiplication with left shift
-                // x * 2^n => x << n
-                type = "x * 2^n ==> x << n";  // Corrected from 2^2 to 2^n
-                newInst = BinaryOperator::Create(
-                    Instruction::Shl, variable, ConstantInt::get(inst.getType(), log2(constantValue)));
+            type = "x * 2^n ==> x << n";
+            Instruction *newInstShift = BinaryOperator::Create(
+                Instruction::Shl, V, ConstantInt::get(inst.getType(), ceil(log2(constantValue))));
 
-                newInst->insertAfter(&inst);
-            } else {
-                // For other constants, try to approximate using shifts and subtractions
-                // x * c => (x << ceil(log2(c))) - x
+            newInstShift->insertAfter(&inst);
+
+            if ((constantValue & (constantValue - 1)) != 0) {
                 type = "x * c ==> x << ceil(log2(c)) - x";
-                Instruction *newInstShift = BinaryOperator::Create(
-                    Instruction::Shl, variable, ConstantInt::get(inst.getType(), ceil(log2(constantValue))));
-
-                newInstShift->insertAfter(&inst);
 
                 newInst = BinaryOperator::Create(
-                    Instruction::Sub, newInstShift, variable);
-
+                    Instruction::Sub, newInstShift, V);
                 newInst->insertAfter(newInstShift);
             }
         }
@@ -194,7 +177,7 @@ bool strengthReduction(Instruction &inst) {
                 // x / 2^n => x >> n
                 type = "x / 2^n ==> x >> n";  // Added description string
                 newInst = BinaryOperator::Create(
-                    Instruction::LShr, variable, ConstantInt::get(inst.getType(), log2(constantValue)));
+                    Instruction::LShr, V, ConstantInt::get(inst.getType(), log2(constantValue)));
                 newInst->insertAfter(&inst);
             }
         }
@@ -207,8 +190,6 @@ bool strengthReduction(Instruction &inst) {
             }
 
             inst.replaceAllUsesWith(newInst);
-            // Note: The instruction is not actually removed
-            // This would require: inst.eraseFromParent();
 
             return true;
         }
