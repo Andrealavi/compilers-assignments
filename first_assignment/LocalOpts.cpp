@@ -176,7 +176,7 @@ bool strengthReduction(Instruction &inst) {
         Instruction *newInst = nullptr;
         int64_t constantValue = C->getSExtValue();
 
-        std::string type;  // Stores the description of the transformation for verbose output
+        std::string type = "";  // Stores the description of the transformation for verbose output
 
         // Handle multiplication operations
         if (opCode == Instruction::Mul) {
@@ -192,6 +192,8 @@ bool strengthReduction(Instruction &inst) {
                 newInst = BinaryOperator::Create(
                     Instruction::Sub, newInstShift, V);
                 newInst->insertAfter(newInstShift);
+            } else {
+                newInst = newInstShift;
             }
         }
         // Handle division operations
