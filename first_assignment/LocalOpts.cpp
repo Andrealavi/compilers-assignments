@@ -5,9 +5,11 @@ using namespace llvm;
 /**
  * Command-line option that enables verbose output for the optimizer.
  * When enabled, the pass will print detailed information about
- * each optimization that is applied.
+ * each optimization that is applied, including:
+ * - The original instruction before optimization
+ * - The specific optimization rule that was applied
  *
- * Use with `-local-opts-verbose` flag when running opt.
+ * Use with `-local-opts-verbose` flag when running the LLVM opt tool.
  */
 static cl::opt<bool> LocalOptsVerbose(
     "local-opts-verbose",
@@ -18,11 +20,23 @@ static cl::opt<bool> LocalOptsVerbose(
 );
 
 /**
- * Optimize instructions based on algebraic identities
- * Examples: x-x=0, x/x=1, x&x=x, x|x=x, x+0=x, x*0=0, etc.
+ * Optimize instructions based on algebraic identities.
+ *
+ * This function recognizes and applies common algebraic simplification rules
+ * to reduce computation overhead. It handles several categories of identities:
+ *
+ * Zero-based identities:
+ * - x - x = 0, x ^ x = 0 (resulting in constant zero)
+ * - x * 0 = 0 (multiplication by zero)
+ *
+ * Identity operations:
+ * - x + 0 = x, x - 0 = x, x << 0 = x, x >> 0 = x, x ^ 0 = x (no effect)
+ * - x & x = x, x | x = x (idempotent operations)
+ * - x / x = 1 (division by self)
+ * - x * 1 = x, x / 1 = x (multiplication/division by one)
  *
  * @param inst The instruction to be optimized
- * @return true if the instruction was optimized, false otherwise
+ * @return true if the instruction was optimized (and marked for removal), false otherwise
  */
 bool algebraicIdentityOptimization(Instruction &inst) {
     Value *LHS = nullptr;
@@ -129,13 +143,22 @@ bool algebraicIdentityOptimization(Instruction &inst) {
 
 /**
  * Apply strength reduction optimizations to convert expensive operations to cheaper ones.
- * This transformation replaces costly operations with equivalent but more efficient
- * sequences of instructions.
  *
- * Examples:
- * - multiplication by power of 2 becomes left shift (x * 2^n => x << n)
- * - division by power of 2 becomes right shift (x / 2^n => x >> n)
- * - multiplication by constant approximated by shifts and subtraction
+ * Strength reduction replaces computationally expensive operations with equivalent but
+ * more efficient sequences. This optimization targets:
+ *
+ * 1. Multiplication by power of 2:
+ *    - x * 2^n becomes x << n (left shift is faster than multiplication)
+ *
+ * 2. Other multiplications by constants:
+ *    - Approximates multiplication using a combination of shift and subtraction
+ *    - x * c becomes (x << ceil(log2(c))) - x for certain constants
+ *
+ * 3. Division by power of 2:
+ *    - x / 2^n becomes x >> n (right shift is faster than division)
+ *
+ * These optimizations significantly improve runtime performance by replacing
+ * high-latency operations with simpler, faster alternatives.
  *
  * @param inst The instruction to be optimized
  * @return true if optimization was applied, false otherwise
@@ -176,7 +199,7 @@ bool strengthReduction(Instruction &inst) {
             if ((constantValue & (constantValue - 1)) == 0) {
                 // If divisor is a power of 2, replace division with right shift
                 // x / 2^n => x >> n
-                type = "x / 2^n ==> x >> n";  // Added description string
+                type = "x / 2^n ==> x >> n";
                 newInst = BinaryOperator::Create(
                     Instruction::LShr, V, ConstantInt::get(inst.getType(), log2(constantValue)));
                 newInst->insertAfter(&inst);
@@ -200,14 +223,20 @@ bool strengthReduction(Instruction &inst) {
 }
 
 /**
- * Optimizes across multiple instructions by recognizing patterns like:
- * (x op1 c) op2 c where op1 and op2 are inverse operations
- * For example: (x + 5) - 5 = x or (x * 2) / 2 = x
+ * Optimizes across multiple instructions by recognizing and eliminating inverse operations.
  *
- * This optimization identifies and eliminates pairs of operations that cancel each other out
- * when they involve the same constant value.
+ * This optimization identifies sequences of instructions where operations cancel each other out,
+ * particularly focusing on patterns like:
+ * - (x + c1) - c1 = x  (addition followed by subtraction of same constant)
+ * - (x - c1) + c1 = x  (subtraction followed by addition of same constant)
  *
- * @param inst The instruction to be optimized
+ * The optimization traverses the instruction graph looking for these patterns,
+ * and when found, replaces the entire sequence with the original value.
+ *
+ * More complex patterns involving multiple operations are also detected when possible,
+ * such as ((x + 5) + 3) - 8 = x.
+ *
+ * @param inst The instruction to be optimized (usually the final operation in a sequence)
  * @return true if optimization was applied, false otherwise
  */
 bool multiInstructionOptimization(Instruction &inst) {
@@ -230,15 +259,14 @@ bool multiInstructionOptimization(Instruction &inst) {
         // Define pairs of inverse operations
         std::map<int, int> opMap {
             {Instruction::Add, Instruction::Sub},
-            {Instruction::Sub, Instruction::Add},
-            {Instruction::Mul, Instruction::SDiv},
-            {Instruction::SDiv, Instruction::Mul}
+            {Instruction::Sub, Instruction::Add}
         };
 
         std::queue<Instruction*> worklist;
         worklist.push(varInst);
 
         std::vector<Instruction*> specular_inst;
+        specular_inst.push_back(varInst);
 
         Value* varV = nullptr;
         ConstantInt* varC = nullptr;
@@ -291,15 +319,13 @@ bool multiInstructionOptimization(Instruction &inst) {
                     inst->print(outs());
                 }
 
-                outs() << "' are specular to the modified instruction\n\n";
-                // Fixed "specular" to "inverse" or similar term would be more accurate
+                outs() << "' are inverse operations that cancel out with the current instruction\n\n";
             }
 
             // If so, we can simplify to just the original variable
             // For example: (x + 5) - 5 = x or (x * 2) / 2 = x
             inst.replaceAllUsesWith(varV);
-            // Note: Instruction is not actually removed
-            // This would require: inst.eraseFromParent();
+            // Note: Instruction removal is handled by the caller
 
             return true;
         }
@@ -309,13 +335,23 @@ bool multiInstructionOptimization(Instruction &inst) {
 }
 
 /**
- * Apply all optimizations to every instruction in a basic block.
- * Attempts to apply algebraic identity, strength reduction, and multi-instruction
- * optimizations to each instruction. When an optimization is applied, metadata
- * is attached to mark which optimization was used.
+ * Apply all available optimizations to every instruction in a basic block.
+ *
+ * This function iterates through each instruction in the provided basic block and
+ * tries to apply the following optimizations in sequence:
+ *
+ * 1. Algebraic Identity Optimizations - simplify based on mathematical rules
+ * 2. Strength Reduction - replace expensive operations with cheaper ones
+ * 3. Multi-Instruction Optimization - eliminate sequences of inverse operations
+ *
+ * When an optimization is successfully applied, the instruction is marked for removal
+ * and will be deleted after all optimizations have been attempted.
+ *
+ * Note: This approach is more targeted than general Dead Code Elimination,
+ * as it only removes instructions that our specific optimizations have replaced.
  *
  * @param BB The basic block to optimize
- * @return true if any optimization was applied
+ * @return true if any optimization was applied to any instruction
  */
 bool runOnBBOptimizations(BasicBlock &BB) {
     std::vector<Instruction*> instructionToRemove;
@@ -363,11 +399,18 @@ bool runOnBBOptimizations(BasicBlock &BB) {
 }
 
 /**
- * Run all optimizations on every basic block in a function.
- * Iterates through each basic block and applies the optimization
- * functions, with verbose output if enabled.
+ * Run all optimization passes on every basic block in a function.
  *
- * @param F The function to optimize
+ * This function coordinates the optimization process at the function level,
+ * iterating through each basic block in the function and applying the
+ * optimization routines. It provides verbose output about the optimization
+ * process when enabled.
+ *
+ * The function serves as an intermediate layer between module-level optimization
+ * and basic block-level optimizations, allowing for function-specific processing
+ * if needed in the future.
+ *
+ * @param F The LLVM Function to optimize
  * @return true if any basic block was transformed
  */
 bool runOnFunction(Function &F) {
@@ -394,12 +437,17 @@ bool runOnFunction(Function &F) {
 
 /**
  * The main pass entry point - runs optimizations on the entire module.
- * This is called by the LLVM pass manager for each module being processed.
- * It orchestrates running the optimizations on each function in the module.
  *
- * @param M The module to optimize
- * @param AM The module analysis manager
- * @return PreservedAnalyses indicating which analyses are preserved
+ * This method is called by the LLVM pass manager for each module being processed.
+ * It orchestrates the optimization process by:
+ * 1. Iterating through each function in the module
+ * 2. Running all available optimizations on each function
+ * 3. Tracking whether any changes were made to determine which analyses to preserve
+ *
+ *
+ * @param M The LLVM Module to optimize
+ * @param AM The module analysis manager providing analysis results
+ * @return PreservedAnalyses indicating which analyses are preserved after optimization
  */
 PreservedAnalyses LocalOpts::run(Module &M, ModuleAnalysisManager &AM) {
     bool transformed = false;
@@ -419,11 +467,13 @@ PreservedAnalyses LocalOpts::run(Module &M, ModuleAnalysisManager &AM) {
 }
 
 /**
- * Get information about this pass plugin.
- * This creates the necessary information structure for the LLVM pass manager
- * to recognize and register our optimization pass.
+ * This function creates the necessary information structure for the LLVM pass manager
+ * to recognize and register our local optimization pass.
  *
- * @return PassPluginLibraryInfo struct with plugin details
+ * The registration callback allows the pass to be invoked via the command line
+ * using the `-passes=local-opts` option with the LLVM opt tool.
+ *
+ * @return PassPluginLibraryInfo struct with complete plugin registration details
  */
 PassPluginLibraryInfo getLocalOptsPluginInfo() {
     return {LLVM_PLUGIN_API_VERSION, "LocalOpts", LLVM_VERSION_STRING,
@@ -443,13 +493,16 @@ PassPluginLibraryInfo getLocalOptsPluginInfo() {
 }
 
 /**
- * Plugin API entry point - allows opt to recognize the pass
- * when used with -passes=local-opts command line option.
+ * Plugin API entry point - Required by LLVM's plugin architecture.
  *
- * This is called by LLVM when loading the pass to get information
- * about it and register it in the pass pipeline.
+ * This function is the main entry point used by the LLVM opt tool when loading
+ * this optimization pass as a plugin. It exposes the pass registration information
+ * to the LLVM pass manager.
  *
- * @return PassPluginLibraryInfo for this pass
+ * The LLVM_ATTRIBUTE_WEAK annotation ensures proper symbol handling across
+ * different build systems and platforms.
+ *
+ * @return PassPluginLibraryInfo containing all details needed to register this pass
  */
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
 llvmGetPassPluginInfo() {
