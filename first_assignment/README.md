@@ -18,8 +18,6 @@ The first assignment for the compilers course consists of implementing a custom 
 - **Multi-instruction Optimization**: Eliminating canceling operations across instructions
   - `(x + c) - c = x`
   - `(x - c) + c = x`
-  - `(x * c) / c = x`
-  - `(x / c) * c = x`
 
 ## Setup and Compilation
 
@@ -45,7 +43,7 @@ Alternatively, you can set up manually:
 
 ```bash
 # Set LLVM directory path (replace with your LLVM installation)
-export LLVM_DIR=/usr/lib/llvm-19/bin
+export LLVM_DIR=/usr/lib/llvm-19/bin    # Usually this folder should be fine
 
 # Create build directory
 mkdir build && cd build
@@ -73,6 +71,11 @@ llvm-dis optimized.ll -o - | less
 
 # It's possible to use only opt and display the optimized file on stdout
 opt -load-pass-plugin=./build/libLocalOpts.so -passes=local-opts examples/single_function.ll -S
+
+# To use the pass with custom LLVM IR code derived from C++ files
+clang++ -O0 -Xclang -disable-O0-optnone -emit-llvm your_file.cpp -S -o your_file.ll # Generates LLVM IR without applying any optimization
+
+opt -passes=mem2reg your_file.ll -S -o your_file.ll
 ```
 
 The `-local-opts-verbose` flag enables detailed output about which optimizations were applied to each instruction, including the specific transformation type.
