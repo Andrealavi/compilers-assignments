@@ -1,6 +1,6 @@
 #include "LocalOpts.hpp"
 #include <iostream>
-#include <llvm-19/llvm/IR/Instruction.h>
+#include <llvm-19/llvm/ADT/ADL.h>
 
 using namespace llvm;
 
@@ -278,7 +278,10 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
             {Instruction::Add, Instruction::Sub},
             {Instruction::Sub, Instruction::Add},
             {Instruction::Shl, Instruction::LShr},
-            {Instruction::LShr, Instruction::Shl}
+            {Instruction::LShr, Instruction::Shl},
+            {Instruction::Mul, Instruction::SDiv},
+            {Instruction::UDiv, Instruction::Mul},
+            {Instruction::SDiv, Instruction::Mul}
         };
 
         std::queue<Instruction*> worklist;
@@ -307,10 +310,10 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
                 // A further check is done to make sure that the operation is not a logical shift becuase
                 // it is not allowed to have shifts with negative values
                 if (varC->getSExtValue() * constantValue < 0 &&
-                    (opCode != varOpcode || opCode == Instruction::Shl || opCode == Instruction::LShr)
+                    (opCode == Instruction::Shl || opCode == Instruction::LShr)
                 ) {
                     return false;
-                } else {
+                } else if (varC->getSExtValue() * constantValue < 0 && opCode == varOpcode) {
                     areDiscordant = true;
                 }
 
