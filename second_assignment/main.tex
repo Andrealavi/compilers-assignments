@@ -44,11 +44,13 @@
 
 \section{Data-Flow Analysis}
 
-Data-flow analysis is a set of techniques used to extract information from the intermediate representation code created by the compiler front-end. Extracting information is crucial task because, without knowledge about the program, the compiler won't be able to perform any optimization or at least not the complex ones.
+Compiler optimizations rely heavily on the analysis of intermediate representation code. These analysis can be categorized into three levels: (1) local, (2) global and (3) interprocedural.
 
-Analysis can be performed both globally and locally. Local analysis focuses on the single basic block and its instructions, whereas global analysis focuses on the whole control flow graph and tries to understand the effects that each basic block has on the others. Data-flow analysis is a type of global analysis.
+Local analysis focuses on a single basic block and its instruction, whereas global analysis evaluates the entire control flow graph, usually related to a single procedure. Finally, interprocedural analysis gathers information across multiple procedures to enable broader optimizations. 
 
-Before diving into some examples of the data-flow analysis problems, it is important to understand what are the effects that instructions and basic blocks can have. Finall, it is important to show the fundamental structure of a data-flow analysis problem and the common framework in which we operate when dealing with such problems.
+Data-flow analysis is a collection of techniques, within the global analysis category, used to extract information about basic blocks and their effects, with the purpose of providing valuable information to the compiler optimizer. Without these information, the compiler would not be able to perform complex optimizations efficiently.
+
+Before diving into some examples of the data-flow analysis problems, it is crucial to understand what can be the effects of instructions and basic blocks and to understand the common framework for data-flow analysis problems.
 
 \subsection{Instruction Effects}
 
@@ -105,9 +107,9 @@ if r2 > 100 goto L1
 
 \subsection{Data-Flow analysis problem structure}
 
- Each techique that lies in the domain of data-flow analysis aims at solving a specific problem regarding the gaining of knowledge about the program. Therefore, it is fundamental whenever we are approaching a data-flow analysis problem to clearly state our goal and define what we are trying to find about the program.
+ Each technique that lies in the domain of data-flow analysis aims at solving a specific problem regarding gaining a certain knowledge about the code. Therefore, it is fundamental to clearly state our goal and define what we are trying to find about the program.
 
- After having properly defined the problem, it is important to define its transfer functions, i.e. the function that maps basic blocks inputs and its outputs and viceversa depending on the problem type (forward or backward).
+ After having properly defined the problem, we need to define its transfer functions, i.e. the function that maps basic blocks inputs to its outputs and viceversa, depending on the problem type (forward or backward).
 
  Besides the transfer function, other important elements that helps properly define the problem are the boundary and initial conditions of each basic block, the direction of the data flow (forward or backward) and the meet operator.
 
@@ -147,7 +149,7 @@ The problem of reaching definitions consists in finding all the available defini
 
 \subsection{Problem formalization}
 
-Formally we say that a definition \textit{d} reaches a point \textit{p} if there is a path from \textit{d} to \textit{p} where \textit{d} is not killed along the path.
+Formally we say that a definition \textit{d} \textbf{reaches} a point \textit{p} if there is a path from \textit{d} to \textit{p} where \textit{d} is not killed along the path.
 
 \begin{table}[H]
 \centering
@@ -211,7 +213,7 @@ The problem of liveness analysis aims at finding which variables are \textit{ali
 
 \subsection{Problem formalization}
 
-Formally we say that a variable \textit{v} is alive at a point \textit{p} if the value of \textit{v} is used along some path from \textit{p} to the exit block, otherwise it is considered dead.
+Formally we say that a variable \textit{v} is \textbf{alive} at a point \textit{p} if the value of \textit{v} is used along some path from \textit{p} to the exit block, otherwise it is considered \textbf{dead}.
 
 \begin{table}[H]
 \centering
@@ -276,7 +278,7 @@ The data-flow problem of available expressions tries to find what are the expres
 
 \subsection{Problem formalization}
 
-Formally, an expression is defined as \textit{available} if it has been computed along every path from the entry block to the point \textit{p}. Moreover, we say that a block generates an expression $x \oplus y$ if it evaluates the expression without subsequently redefining $x$ or $y$. Otherwise, we say that a block kills an expression when it assign a new value either to $x$ or $y$ and do not recomputes the expression $x \oplus y$.
+Formally, an expression is defined as \textbf{available} if it has been computed along every path from the entry block to the point \textit{p}. Moreover, we say that a block \textit{generates} an expression $x \oplus y$ if it evaluates the expression without subsequently redefining $x$ or $y$. Otherwise, we say that a block \textit{kills} an expression when it assign a new value either to $x$ or $y$ and do not recomputes the expression $x \oplus y$.
 
 \begin{table}[H]
 \centering
@@ -354,7 +356,7 @@ The search for very busy expressions can be useful for code hoisting, since very
 
 \subsection{Problem formalization}
 
-Formally an expression is said to be very busy when it is computed along each path that part from the point \textit{p} without any redefinition of its operands. This information can be used to move the expression to a point of the code in which is computation can be used by all the paths that use the expression.
+Formally an expression is said to be \textbf{very busy} when it is computed along each path that part from the point \textit{p} without any redefinition of its operands. This information can be used to move the expression to a point of the code in which is computation can be used by all the paths that use the expression.
 
 \begin{table}[H]
 \centering
@@ -416,7 +418,7 @@ Dominator analysis is fundamental to create the single static assignment form.
 
 \subsection{Problem formalization}
 
-A basic block $B_1$ dominates another block $B_2$ if it is encountered in every path from entry to $B_2$.
+A basic block $B_1$ \textbf{dominates} another block $B_2$ if it is encountered in every path from entry to $B_2$.
 
 \begin{table}[H]
 \centering
