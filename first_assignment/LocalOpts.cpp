@@ -1,6 +1,7 @@
 #include "LocalOpts.hpp"
 #include <iostream>
 #include <llvm-19/llvm/ADT/ADL.h>
+#include <llvm-19/llvm/IR/Instruction.h>
 
 using namespace llvm;
 
@@ -237,6 +238,8 @@ bool strengthReduction(Instruction &inst) {
  * - (x - c1) + c1 = x  (subtraction followed by addition of same constant)
  * - (x << c1) >> c1 = x  (left shift followed by right shift of same constant)
  * - (x >> c1) << c1 = x  (right shift followed by left shift of same constant)
+ * - (x * c1) / c1 = x  (left shift followed by right shift of same constant)
+ * - (x / c1) * c1 = x  (right shift followed by left shift of same constant)
  *
  * It is also able to the same patterns with negative constants, such as:
  * - (x + (-c1)) + c1 = x
@@ -309,12 +312,14 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
                 // This if checks whether the operations are of the same type but with negative constants
                 // A further check is done to make sure that the operation is not a logical shift becuase
                 // it is not allowed to have shifts with negative values
-                if (varC->getSExtValue() * constantValue < 0 &&
-                    (opCode == Instruction::Shl || opCode == Instruction::LShr)
+                if (
+                    constantValue * varC->getSExtValue() < 0 &&
+                    opCode == varOpcode &&
+                    (opCode != Instruction::Add || opCode != Instruction::Sub)
                 ) {
-                    return false;
-                } else if (varC->getSExtValue() * constantValue < 0 && opCode == varOpcode) {
                     areDiscordant = true;
+                } else if (opCode == varOpcode) {
+                    return false;
                 }
 
                 if (LocalOptsVerbose) {
@@ -326,17 +331,28 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
                 if (areDiscordant) {
                     temp = constantValue + varC->getSExtValue();
                 } else {
-                    temp = constantValue - varC->getSExtValue();
+                    if (
+                        opCode == Instruction::Mul ||
+                        opCode == Instruction::UDiv ||
+                        opCode == Instruction::SDiv
+                    ) {
+                        temp = constantValue / varC->getSExtValue();
+                    } else {
+                        temp = constantValue - varC->getSExtValue();
+                    }
                 }
 
-                if (temp > 0) {
+                if (
+                    temp == 0 ||
+                    (temp == 1 && (opCode == Instruction::Mul || opCode == Instruction::UDiv || opCode == Instruction::SDiv))
+                ) {
+                    canOptimize = true;
+                } else if (temp > 0) {
                     if (Instruction *vInst = dyn_cast<Instruction>(varV)) {
                         worklist.push(vInst);
                         specular_inst.push_back(vInst);
                         constantValue = temp;
                     }
-                } else if (temp == 0) {
-                    canOptimize = true;
                 } else {
                     return false;
                 }
