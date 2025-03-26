@@ -1,4 +1,6 @@
 #include "LocalOpts.hpp"
+#include <iostream>
+#include <llvm-19/llvm/IR/Instruction.h>
 
 using namespace llvm;
 
@@ -43,16 +45,14 @@ bool algebraicIdentityOptimization(Instruction &inst) {
     Value *RHS = nullptr;
     ConstantInt *C = nullptr;
 
-    // Only process binary operators
+    // Matches if the operation is a binary operation
+    // I've used this approach instead of the simpler inst.isBinaryOp() because
+    // this allow to easily separate the constant and the value, avoiding further checks on the types
     if (
         PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_ConstantInt(C))) ||
         PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(LHS))) ||
         PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_Value(RHS)))
     ) {
-        if (isa<Constant>(LHS)) {
-            return false;
-        }
-
         unsigned int opCode = inst.getOpcode();  // Operation code (Add, Sub, etc.)
 
         int64_t constantValue = 0;
@@ -157,7 +157,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
  * 3. Division by power of 2:
  *    - x / 2^n becomes x >> n (right shift is faster than division)
  *
- * These optimizations significantly improve runtime performance by replacing
+ * These optimizations improve runtime performance by replacing
  * high-latency operations with simpler, faster alternatives.
  *
  * @param inst The instruction to be optimized
@@ -231,17 +231,28 @@ bool strengthReduction(Instruction &inst) {
  * particularly focusing on patterns like:
  * - (x + c1) - c1 = x  (addition followed by subtraction of same constant)
  * - (x - c1) + c1 = x  (subtraction followed by addition of same constant)
+ * - (x << c1) >> c1 = x  (left shift followed by right shift of same constant)
+ * - (x >> c1) << c1 = x  (right shift followed by left shift of same constant)
+ *
+ * It is also able to the same patterns with negative constants, such as:
+ * - (x + (-c1)) + c1 = x
  *
  * The optimization traverses the instruction graph looking for these patterns,
- * and when found, replaces the entire sequence with the original value.
+ * and when found, replaces the entire sequence (if it has no other uses) with the original value.
  *
  * More complex patterns involving multiple operations are also detected when possible,
  * such as ((x + 5) + 3) - 8 = x.
  *
+ * Note: This optimization can detect inverse shift operations which correspond to multiplication and
+ * division by powers of two. However, it cannot match cases where the value is multiplied and divided
+ * by numbers that are not powers of 2, since these operations are typically transformed by strength
+ * reduction optimization into different instruction sequences.
+ *
  * @param inst The instruction to be optimized (usually the final operation in a sequence)
+ * @param instructionsToRemove Vector containing the instruction to remove from the IR after optimizations
  * @return true if optimization was applied, false otherwise
  */
-bool multiInstructionOptimization(Instruction &inst) {
+bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &instructionsToRemove) {
     Value *V = nullptr;
     ConstantInt *C = nullptr;
 
@@ -261,7 +272,9 @@ bool multiInstructionOptimization(Instruction &inst) {
         // Define pairs of inverse operations
         std::map<int, int> opMap {
             {Instruction::Add, Instruction::Sub},
-            {Instruction::Sub, Instruction::Add}
+            {Instruction::Sub, Instruction::Add},
+            {Instruction::Shl, Instruction::LShr},
+            {Instruction::LShr, Instruction::Shl}
         };
 
         std::queue<Instruction*> worklist;
@@ -282,31 +295,43 @@ bool multiInstructionOptimization(Instruction &inst) {
             if (
                 (PatternMatch::match(varInst, PatternMatch::m_BinOp(PatternMatch::m_Value(varV), PatternMatch::m_ConstantInt(varC))) ||
                 PatternMatch::match(varInst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(varC), PatternMatch::m_Value(varV)))) &&
-                opMap[opCode] == varOpcode
+                (opMap[opCode] == varOpcode || opCode == varOpcode)
             ) {
+                bool areDiscordant = false;
+
+                // This if checks whether the operations are of the same type but with negative constants
+                // A further check is done to make sure that the operation is not a logical shift becuase
+                // it is not allowed to have shifts with negative values
+                if (varC->getSExtValue() * constantValue < 0 &&
+                    (opCode != varOpcode || opCode == Instruction::Shl || opCode == Instruction::LShr)
+                ) {
+                    return false;
+                } else {
+                    areDiscordant = true;
+                }
 
                 if (LocalOptsVerbose) {
                     outs() << "Found potential inverse operation with constant: " << varC->getSExtValue() << "\n";
                 }
 
-                if ((constantValue - varC->getSExtValue()) == 0 || constantValue == 0) {
+                int64_t temp = 0;
+
+                if (areDiscordant) {
+                    temp = constantValue + varC->getSExtValue();
+                } else {
+                    temp = constantValue - varC->getSExtValue();
+                }
+
+                if (temp > 0) {
+                    if (Instruction *vInst = dyn_cast<Instruction>(varV)) {
+                        worklist.push(vInst);
+                        specular_inst.push_back(vInst);
+                        constantValue = temp;
+                    }
+                } else if (temp == 0) {
                     canOptimize = true;
                 } else {
-                    int64_t temp = constantValue - varC->getSExtValue();
-
-                    // Multiplications and Divisions are not considered
-                    // since with strength reduction optimization will be
-                    // too difficult to find possible optimizations
-
-                    if (temp > 0) {
-                        if (Instruction *vInst = dyn_cast<Instruction>(varV)) {
-                            worklist.push(vInst);
-                            specular_inst.push_back(vInst);
-                            constantValue = temp;
-                        }
-                    } else {
-                        return false;
-                    }
+                    return false;
                 }
             }
         }
@@ -315,19 +340,24 @@ bool multiInstructionOptimization(Instruction &inst) {
         if (canOptimize) {
             if (LocalOptsVerbose) {
                 outs() << "Applying Multi Instruction optimization on instruction: " << inst << "\n";
-                outs() << "This is because, these instructions '";
+                outs() << "This is because, these instructions:\n";
 
                 for (Instruction *inst : specular_inst) {
+                    outs() << "\t";
                     inst->print(outs());
+                    outs() << "\n";
                 }
 
-                outs() << "' are inverse operations that cancel out with the current instruction\n\n";
+                outs() << "are inverse operations that cancel out with the current instruction\n\n";
+            }
+
+            for (Instruction *inst : specular_inst) {
+                if (inst->hasNUses(1)) instructionsToRemove.push_back(inst);
             }
 
             // If so, we can simplify to just the original variable
             // For example: (x + 5) - 5 = x or (x * 2) / 2 = x
             inst.replaceAllUsesWith(varV);
-            // Note: Instruction removal is handled by the caller
 
             return true;
         }
@@ -356,7 +386,7 @@ bool multiInstructionOptimization(Instruction &inst) {
  * @return true if any optimization was applied to any instruction
  */
 bool runOnBBOptimizations(BasicBlock &BB) {
-    std::vector<Instruction*> instructionToRemove;
+    std::vector<Instruction*> instructionsToRemove;
 
     bool isChanged = false;
 
@@ -364,17 +394,18 @@ bool runOnBBOptimizations(BasicBlock &BB) {
         if (
             algebraicIdentityOptimization(inst) ||
             strengthReduction(inst) ||
-            multiInstructionOptimization(inst)
+            multiInstructionOptimization(inst, instructionsToRemove)
         ) {
-            instructionToRemove.push_back(&inst);
+            instructionsToRemove.push_back(&inst);
             isChanged = true;
         }
     }
 
     /*
-    This code could be used to perform Dead Code Elimination but it works
-    too well for our purpose, therefore it is better to use a simpler
-    approach that just removes the optimized instructions.
+    Note on alternative approach:
+        A full Dead Code Elimination (DCE) pass could be implemented as follows,
+        but it's too aggressive for our targeted optimization purposes.
+        We prefer to only remove instructions that our optimizations have explicitly handled.
 
     for (Instruction &inst : BB) {
         if (inst.isSafeToRemove()) {
@@ -387,7 +418,7 @@ bool runOnBBOptimizations(BasicBlock &BB) {
     }
     */
 
-    for (Instruction *inst : instructionToRemove) {
+    for (Instruction *inst : instructionsToRemove) {
         if (LocalOptsVerbose) {
             outs() << "Removing instruction: ";
             inst->print(outs());
