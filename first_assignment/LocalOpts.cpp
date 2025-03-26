@@ -180,13 +180,17 @@ bool strengthReduction(Instruction &inst) {
 
         // Handle multiplication operations
         if (opCode == Instruction::Mul) {
+            int constantLog = ceil(log2(constantValue));
+
+            if ((pow(2, constantLog) - constantValue) > 1) return false;
+
             type = "x * 2^n ==> x << n";
             Instruction *newInstShift = BinaryOperator::Create(
-                Instruction::Shl, V, ConstantInt::get(inst.getType(), ceil(log2(constantValue))));
+                Instruction::Shl, V, ConstantInt::get(inst.getType(), constantLog));
 
             newInstShift->insertAfter(&inst);
 
-            if ((constantValue & (constantValue - 1)) != 0) {
+            if ((constantValue & (constantValue - 1)) != 0)  {
                 type = "x * c ==> x << ceil(log2(c)) - x";
 
                 newInst = BinaryOperator::Create(
