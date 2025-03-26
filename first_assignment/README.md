@@ -18,6 +18,10 @@ The first assignment for the compilers course consists of implementing a custom 
 - **Multi-instruction Optimization**: Eliminating canceling operations across instructions
   - `(x + c) - c = x`
   - `(x - c) + c = x`
+  - `(x << c) >> c = x`
+  - `(x >> c) << c = x`
+  - `(x * c) / c = x`
+  - `(x / c) * c = x`
 
 ## Setup and Compilation
 
