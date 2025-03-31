@@ -1,7 +1,4 @@
 #include "LocalOpts.hpp"
-#include <iostream>
-#include <llvm-19/llvm/ADT/ADL.h>
-#include <llvm-19/llvm/IR/Instruction.h>
 
 using namespace llvm;
 
@@ -62,7 +59,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
 
         std::string identity = "";  // Stores the description of the applied identity for verbose output
 
-        std::vector<int> zeroConstantOps = {
+        static const std::vector<int> zeroConstantOps = {
             Instruction::Add,
             Instruction::Sub,
             Instruction::Shl,
@@ -71,7 +68,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
             Instruction::Xor
         };
 
-        std::vector<int> oneConstantOps = {
+        static const std::vector<int> oneConstantOps = {
             Instruction::Mul,
             Instruction::UDiv,
             Instruction::SDiv,
@@ -95,7 +92,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
         }
 
         if (LocalOptsVerbose) {
-            std::map<int, std::string> constantIdentities {
+            static const std::map<int, std::string> constantIdentities {
                 {Instruction::Add, "x + 0 = x"},
                 {Instruction::Sub, "x - 0 = x"},
                 {Instruction::Mul, "x * 0 = 0"},
@@ -107,7 +104,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
                 {Instruction::UDiv, "x / 1 = x"}
             };
 
-            std::map<int, std::string> nonConstantIdentities {
+            static const std::map<int, std::string> nonConstantIdentities {
                 {Instruction::Sub, "x - x = 0"},
                 {Instruction::And, "x & x = x"},
                 {Instruction::Or, "x | x = x"},
@@ -187,7 +184,7 @@ bool strengthReduction(Instruction &inst) {
 
             type = "x * 2^n ==> x << n";
             Instruction *newInstShift = BinaryOperator::Create(
-                Instruction::Shl, V, ConstantInt::get(inst.getType(), constantLog));
+                Instruction::Shl, V, ConstantInt::get(Type::getInt32Ty(inst.getParent()->getContext()), constantLog));
 
             newInstShift->insertAfter(&inst);
 
@@ -277,7 +274,7 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
         }
 
         // Define pairs of inverse operations
-        std::map<int, int> opMap {
+        static const std::map<int, int> opMap {
             {Instruction::Add, Instruction::Sub},
             {Instruction::Sub, Instruction::Add},
             {Instruction::Shl, Instruction::LShr},
@@ -415,9 +412,10 @@ bool runOnBBOptimizations(BasicBlock &BB) {
 
     for (Instruction &inst : BB) {
         if (
-            algebraicIdentityOptimization(inst) ||
+            (algebraicIdentityOptimization(inst) ||
             strengthReduction(inst) ||
-            multiInstructionOptimization(inst, instructionsToRemove)
+            multiInstructionOptimization(inst, instructionsToRemove)) &&
+            inst.getType()->isFloatingPointTy() // Optimizations are for integer operations only
         ) {
             instructionsToRemove.push_back(&inst);
             isChanged = true;
