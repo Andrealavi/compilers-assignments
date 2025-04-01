@@ -19,6 +19,18 @@ static cl::opt<bool> LocalOptsVerbose(
     cl::init(false)
 );
 
+/**
+ * Converts an integer to a set of bit positions where '1's appear in its binary representation.
+ *
+ * For example, for n=10 (binary: 1010), the function returns {1,3} because bits at
+ * positions 1 and 3 are set.
+ *
+ * This helper function is used during strength reduction to decompose constant
+ * multipliers into their power-of-2 components.
+ *
+ * @param n The integer to analyze
+ * @return A set containing the bit positions of all set bits in n
+ */
 std::set<int> getExpSet(int n) {
     std::set<int> expSet;
 
@@ -52,6 +64,12 @@ std::set<int> getExpSet(int n) {
  * - x & x = x, x | x = x (idempotent operations)
  * - x / x = 1 (division by self)
  * - x * 1 = x, x / 1 = x (multiplication/division by one)
+ *
+ * Implementation details:
+ * - Uses LLVM's pattern matchers to identify binary operations with constants
+ * - Handles both cases where constant is on left or right side
+ * - Provides verbose output showing the identity that was applied
+ * - Replaces the original instruction with the simplified value
  *
  * @param inst The instruction to be optimized
  * @return true if the instruction was optimized (and marked for removal), false otherwise
@@ -99,7 +117,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
         ) {
             newValue = Constant::getNullValue(inst.getType());
         } else if (
-            !(C && opCode == Instruction::Sub && C == inst.getOperand(0)) &&
+            !(C && opCode == Instruction::Sub && C == inst.getOperand(0)) && // if the instruction is of the type y = 0 - x it should not be applied
             ((C && (constantValue == 0 || constantValue == -1) && std::find(zeroConstantOps.begin(), zeroConstantOps.end(), opCode) != zeroConstantOps.end()) ||
             (C && constantValue == 1 && std::find(oneConstantOps.begin(), oneConstantOps.end(), opCode) != oneConstantOps.end()) ||
             ((LHS == RHS) && (opCode == Instruction::And || opCode == Instruction::Or)))
@@ -168,15 +186,20 @@ bool algebraicIdentityOptimization(Instruction &inst) {
  * 1. Multiplication by power of 2:
  *    - x * 2^n becomes x << n (left shift is faster than multiplication)
  *
- * 2. Other multiplications by constants:
- *    - Approximates multiplication using a combination of shift and subtraction
- *    - x * c becomes (x << ceil(log2(c))) - x for certain constants
+ * 2. Multiplication by specific patterns:
+ *    - For constants like 2^n-1 (e.g., 7, 15): x * c becomes (x << n) - x
+ *    - For constants with few set bits: decomposes multiplication into a series of shifts and adds
+ *      (e.g., x * 10 becomes (x << 3) + (x << 1) since 10 = 2^3 + 2^1)
  *
  * 3. Division by power of 2:
  *    - x / 2^n becomes x >> n (right shift is faster than division)
  *
- * These optimizations improve runtime performance by replacing
- * high-latency operations with simpler, faster alternatives.
+ * Implementation details:
+ * - Uses getExpSet() to decompose constants into their binary components
+ * - For constants with all bits set (2^n-1), applies the (x << n) - x optimization
+ * - For constants with few set bits (<=3), creates a sequence of shift and add operations
+ * - Handles negative constants by negating the final result
+ * - Each new instruction is inserted in the proper position in the IR
  *
  * @param inst The instruction to be optimized
  * @return true if optimization was applied, false otherwise
@@ -204,9 +227,13 @@ bool strengthReduction(Instruction &inst) {
 
         // Handle multiplication operations
         // The number is converted to binary and a set with the exponents to use is created.
-        // If the constant has a binary value of the type 0111, 011 and so forth,
+        // If the constant has a binary is equal to 2^(n-1)
         // the optimization x << c - x is applied
         // Otherwise the strength reduction is applied by converting the multiplication into a sum of different power of two
+        // I've decided to limit the usage of the strength reduction optimization if the number of shifts to add is more than 3
+        // Even though the mul instruction is a multi-cycle instruction, substituting it with multiple shifts and adds can
+        // become more expensive than the single mul. My choice is arbitrary and it is based on simple web researchs, therefore
+        // it can be not the perfect solution
         if (opCode == Instruction::Mul) {
             std::set<int> expSet = getExpSet(constantValue);
             int nBits = floor(log2(constantValue)) + 1;
@@ -290,30 +317,31 @@ bool strengthReduction(Instruction &inst) {
  * Optimizes across multiple instructions by recognizing and eliminating inverse operations.
  *
  * This optimization identifies sequences of instructions where operations cancel each other out,
- * particularly focusing on patterns like:
+ * with a focus on patterns like:
  * - (x + c1) - c1 = x  (addition followed by subtraction of same constant)
  * - (x - c1) + c1 = x  (subtraction followed by addition of same constant)
  * - (x << c1) >> c1 = x  (left shift followed by right shift of same constant)
  * - (x >> c1) << c1 = x  (right shift followed by left shift of same constant)
- * - (x * c1) / c1 = x  (left shift followed by right shift of same constant)
- * - (x / c1) * c1 = x  (right shift followed by left shift of same constant)
+ * - (x * c1) / c1 = x  (multiplication followed by division with same constant)
+ * - (x / c1) * c1 = x  (division followed by multiplication with same constant)
  *
- * It is also able to the same patterns with negative constants, such as:
- * - (x + (-c1)) + c1 = x
+ * Implementation algorithm:
+ * 1. Start with a binary operation (e.g., sub, add) with a constant operand
+ * 2. Check if its variable operand is also a binary operation
+ * 3. Use a worklist to traverse a chain of operations, building a list of specular instructions
+ * 4. Track accumulating constant values to detect when operations cancel out
+ * 5. For add/sub: check if constants sum to zero
+ * 6. For mul/div: check if constants divide to 1
+ * 7. For shift operations: check if shift amounts cancel out
  *
- * The optimization traverses the instruction graph looking for these patterns,
- * and when found, replaces the entire sequence (if it has no other uses) with the original value.
+ * Complex patterns like ((x + 5) + 3) - 8 = x are handled by recursively analyzing the
+ * instruction chain.
  *
- * More complex patterns involving multiple operations are also detected when possible,
- * such as ((x + 5) + 3) - 8 = x.
- *
- * Note: This optimization can detect inverse shift operations which correspond to multiplication and
- * division by powers of two. However, it cannot match cases where the value is multiplied and divided
- * by numbers that are not powers of 2, since these operations are typically transformed by strength
- * reduction optimization into different instruction sequences.
+ * When a cancellation pattern is found, the entire chain is replaced with the original
+ * variable, and unused instructions are marked for removal.
  *
  * @param inst The instruction to be optimized (usually the final operation in a sequence)
- * @param instructionsToRemove Vector containing the instruction to remove from the IR after optimizations
+ * @param instructionsToRemove Vector storing instructions to be removed after optimization
  * @return true if optimization was applied, false otherwise
  */
 bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &instructionsToRemove) {
@@ -456,8 +484,11 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
  * 2. Strength Reduction - replace expensive operations with cheaper ones
  * 3. Multi-Instruction Optimization - eliminate sequences of inverse operations
  *
- * When an optimization is successfully applied, the instruction is marked for removal
- * and will be deleted after all optimizations have been attempted.
+ * Implementation details:
+ * - Skips floating point operations (only optimizes integer operations)
+ * - Collects instructions that have been replaced by optimizations
+ * - Removes the optimized instructions after all transformations are complete
+ * - Provides verbose output about removed instructions when enabled
  *
  * Note: This approach is more targeted than general Dead Code Elimination,
  * as it only removes instructions that our specific optimizations have replaced.
@@ -558,6 +589,8 @@ bool runOnFunction(Function &F) {
  * 2. Running all available optimizations on each function
  * 3. Tracking whether any changes were made to determine which analyses to preserve
  *
+ * Following LLVM's pass manager requirements, it returns information about which
+ * analysis results remain valid after the transformations.
  *
  * @param M The LLVM Module to optimize
  * @param AM The module analysis manager providing analysis results
