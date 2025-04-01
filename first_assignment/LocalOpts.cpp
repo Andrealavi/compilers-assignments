@@ -229,11 +229,7 @@ bool strengthReduction(Instruction &inst) {
         // The number is converted to binary and a set with the exponents to use is created.
         // If the constant has a binary is equal to 2^(n-1)
         // the optimization x << c - x is applied
-        // Otherwise the strength reduction is applied by converting the multiplication into a sum of different power of two
-        // I've decided to limit the usage of the strength reduction optimization if the number of shifts to add is more than 3
-        // Even though the mul instruction is a multi-cycle instruction, substituting it with multiple shifts and adds can
-        // become more expensive than the single mul. My choice is arbitrary and it is based on simple web researchs, therefore
-        // it can be not the perfect solution
+        // Otherwise the strength reduction is applied by converting the multiplication into a sum of different power of two.
         if (opCode == Instruction::Mul) {
             std::set<int> expSet = getExpSet(constantValue);
             int nBits = floor(log2(constantValue)) + 1;
@@ -254,6 +250,12 @@ bool strengthReduction(Instruction &inst) {
 
                 newInst = newInstSub;
             } else if (expSet.size() < 4) {
+                // I've decided to not apply strength reduction optimization if the number of shifts to add is more than 3.
+                // Even though the mul instruction is a multi-cycle instruction, replacing it with multiple shifts and adds can
+                // become more expensive than the mul itself.
+                // My choice is arbitrary and it is based on simple web researchs, therefore
+                // I don't consider it as the perfect solution and it, perharps, could be improved; however I consider it a good trade-off
+
                 type = "x * c = x * (2^c1 + 2^c2 ...) ==> x << c1 + x << c2 ...";
                 for (int exp : expSet) {
                     Instruction *newInstShift = BinaryOperator::Create(
@@ -395,7 +397,7 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
                 bool areDiscordant = false;
 
                 // This if checks whether the operations are of the same type but with negative constants
-                // A further check is done to make sure that the operation is not a logical shift becuase
+                // A further check is done to make sure that the operation is not a logical shift because
                 // it is not allowed to have shifts with negative values
                 if (
                     constantValue * varC->getSExtValue() < 0 &&
@@ -517,7 +519,7 @@ bool runOnBBOptimizations(BasicBlock &BB) {
     Note on alternative approach:
         A full Dead Code Elimination (DCE) pass could be implemented as follows,
         but it's too aggressive for our targeted optimization purposes.
-        We prefer to only remove instructions that our optimizations have explicitly handled.
+        I prefer to only remove instructions that our optimizations have explicitly handled.
 
     for (Instruction &inst : BB) {
         if (inst.isSafeToRemove()) {
