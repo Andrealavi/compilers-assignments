@@ -153,6 +153,8 @@ bool algebraicIdentityOptimization(Instruction &inst) {
 
             if (C && C->getSExtValue() == 0 && opCode == Instruction::Mul) {
                 identity = "x * 0 = 0";
+            } else if (C && C->getSExtValue() == -1 && opCode == Instruction::And) {
+                identity = "x & -1 = x";
             } else if (C) {
                 identity = constantIdentities.at(opCode);
             } else {
