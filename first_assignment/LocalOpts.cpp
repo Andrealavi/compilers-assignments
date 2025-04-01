@@ -461,6 +461,8 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
                 outs() << "are inverse operations that cancel out with the current instruction\n\n";
             }
 
+            instructionsToRemove.push_back(&inst);
+
             for (Instruction *inst : specular_inst) {
                 if (inst->hasNUses(1)) instructionsToRemove.push_back(inst);
             }
@@ -510,7 +512,9 @@ bool runOnBBOptimizations(BasicBlock &BB) {
             strengthReduction(inst) ||
             multiInstructionOptimization(inst, instructionsToRemove))
         ) {
-            instructionsToRemove.push_back(&inst);
+            if (find(instructionsToRemove.begin(), instructionsToRemove.end(), &inst) == instructionsToRemove.end()) {
+                instructionsToRemove.push_back(&inst);
+            }
             isChanged = true;
         }
     }
