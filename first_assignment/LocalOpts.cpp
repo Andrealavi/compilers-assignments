@@ -19,6 +19,24 @@ static cl::opt<bool> LocalOptsVerbose(
     cl::init(false)
 );
 
+std::set<int> getExpSet(int n) {
+    std::set<int> expSet;
+
+    int nBits = floor(log2(n)) + 1;
+
+    int res = n;
+
+    for (int i = 0; i < nBits; i++) {
+        if (res % 2 == 1) {
+            expSet.insert(i);
+        }
+
+        res /= 2;
+    }
+
+    return expSet;
+};
+
 /**
  * Optimize instructions based on algebraic identities.
  *
@@ -65,7 +83,8 @@ bool algebraicIdentityOptimization(Instruction &inst) {
             Instruction::Shl,
             Instruction::LShr,
             Instruction::And,
-            Instruction::Xor
+            Instruction::Xor,
+            Instruction::Or,
         };
 
         static const std::vector<int> oneConstantOps = {
@@ -80,9 +99,10 @@ bool algebraicIdentityOptimization(Instruction &inst) {
         ) {
             newValue = Constant::getNullValue(inst.getType());
         } else if (
-            (C && constantValue == 0 && std::find(zeroConstantOps.begin(), zeroConstantOps.end(), opCode) != zeroConstantOps.end()) ||
+            !(C && opCode == Instruction::Sub && C == inst.getOperand(0)) &&
+            ((C && (constantValue == 0 || constantValue == -1) && std::find(zeroConstantOps.begin(), zeroConstantOps.end(), opCode) != zeroConstantOps.end()) ||
             (C && constantValue == 1 && std::find(oneConstantOps.begin(), oneConstantOps.end(), opCode) != oneConstantOps.end()) ||
-            ((LHS == RHS) && (opCode == Instruction::And || opCode == Instruction::Or))
+            ((LHS == RHS) && (opCode == Instruction::And || opCode == Instruction::Or)))
         ) {
             newValue = LHS;
         } else if ((LHS == RHS) && (opCode == Instruction::SDiv || opCode == Instruction::UDiv)) {
@@ -95,7 +115,7 @@ bool algebraicIdentityOptimization(Instruction &inst) {
             static const std::map<int, std::string> constantIdentities {
                 {Instruction::Add, "x + 0 = x"},
                 {Instruction::Sub, "x - 0 = x"},
-                {Instruction::Mul, "x * 0 = 0"},
+                {Instruction::Mul, "x * 1 = x"},
                 {Instruction::Shl, "x << 0 = x"},
                 {Instruction::LShr, "x >> 0 = x"},
                 {Instruction::Xor, "x ^ 0 = x"},
@@ -116,9 +136,9 @@ bool algebraicIdentityOptimization(Instruction &inst) {
             if (C && C->getSExtValue() == 0 && opCode == Instruction::Mul) {
                 identity = "x * 0 = 0";
             } else if (C) {
-                identity = constantIdentities[opCode];
+                identity = constantIdentities.at(opCode);
             } else {
-                identity = nonConstantIdentities[opCode];
+                identity = nonConstantIdentities.at(opCode);
             }
         }
 
@@ -174,30 +194,64 @@ bool strengthReduction(Instruction &inst) {
         Instruction *newInst = nullptr;
         int64_t constantValue = C->getSExtValue();
 
+        bool isNegative = constantValue < 0;
+
+        if (isNegative) {
+            constantValue *= -1;
+        }
+
         std::string type = "";  // Stores the description of the transformation for verbose output
 
         // Handle multiplication operations
+        // The number is converted to binary and a set with the exponents to use is created.
+        // If the constant has a binary value of the type 0111, 011 and so forth,
+        // the optimization x << c - x is applied
+        // Otherwise the strength reduction is applied by converting the multiplication into a sum of different power of two
         if (opCode == Instruction::Mul) {
-            int constantLog = ceil(log2(constantValue));
+            std::set<int> expSet = getExpSet(constantValue);
+            int nBits = floor(log2(constantValue)) + 1;
 
-            if ((pow(2, constantLog) - constantValue) > 1) return false;
+            Instruction *prevInst = &inst;
 
-            type = "x * 2^n ==> x << n";
-            Instruction *newInstShift = BinaryOperator::Create(
-                Instruction::Shl, V, ConstantInt::get(Type::getInt32Ty(inst.getParent()->getContext()), constantLog));
+            if (expSet.size() == nBits) {
+                type = "(x << c) - x";
+                Instruction *newInstShift = BinaryOperator::Create(
+                    Instruction::Shl, V, ConstantInt::get(Type::getInt32Ty(inst.getParent()->getContext()), nBits));
 
-            newInstShift->insertAfter(&inst);
+                newInstShift->insertAfter(prevInst);
 
-            if ((constantValue & (constantValue - 1)) != 0)  {
-                type = "x * c ==> x << ceil(log2(c)) - x";
+                Instruction *newInstSub = BinaryOperator::CreateNSWSub(
+                    newInstShift, V);
 
-                newInst = BinaryOperator::Create(
-                    Instruction::Sub, newInstShift, V);
-                newInst->insertAfter(newInstShift);
+                newInstSub->insertAfter(newInstShift);
+
+                newInst = newInstSub;
+            } else if (expSet.size() < 4) {
+                type = "x * c = x * (2^c1 + 2^c2 ...) ==> x << c1 + x << c2 ...";
+                for (int exp : expSet) {
+                    Instruction *newInstShift = BinaryOperator::Create(
+                        Instruction::Shl, V, ConstantInt::get(Type::getInt32Ty(inst.getParent()->getContext()), exp));
+
+                    newInstShift->insertAfter(prevInst);
+
+                    if (expSet.size() > 1 && prevInst != &inst) {
+                        Instruction *newInstAdd = nullptr;
+
+                        newInstAdd = BinaryOperator::CreateNSWAdd(
+                            newInstShift, prevInst);
+
+                        newInstAdd->insertAfter(newInstShift);
+                        prevInst = newInstAdd;
+                    } else {
+                        prevInst = newInstShift;
+                    }
+                }
+
+                newInst = prevInst;
             } else {
-                newInst = newInstShift;
+                return false;
             }
-        }
+       }
         // Handle division operations
         else if (opCode == Instruction::SDiv || opCode == Instruction::UDiv) {
             if ((constantValue & (constantValue - 1)) == 0) {
@@ -208,6 +262,12 @@ bool strengthReduction(Instruction &inst) {
                     Instruction::LShr, V, ConstantInt::get(inst.getType(), log2(constantValue)));
                 newInst->insertAfter(&inst);
             }
+        }
+
+        if (isNegative) {
+            Instruction *negInst = BinaryOperator::CreateNSWSub(ConstantInt::get(inst.getType(), 0), newInst, "neg");
+            negInst->insertAfter(newInst);
+            newInst = negInst;
         }
 
         // If optimization was applied, update all uses of the original instruction
@@ -302,7 +362,7 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
             if (
                 (PatternMatch::match(varInst, PatternMatch::m_BinOp(PatternMatch::m_Value(varV), PatternMatch::m_ConstantInt(varC))) ||
                 PatternMatch::match(varInst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(varC), PatternMatch::m_Value(varV)))) &&
-                (opMap[opCode] == varOpcode || opCode == varOpcode)
+                (opMap.at(opCode) == varOpcode || opCode == varOpcode)
             ) {
                 bool areDiscordant = false;
 
@@ -412,10 +472,10 @@ bool runOnBBOptimizations(BasicBlock &BB) {
 
     for (Instruction &inst : BB) {
         if (
+            !inst.getType()->isFloatingPointTy() && // Optimizations are for integer operations only
             (algebraicIdentityOptimization(inst) ||
             strengthReduction(inst) ||
-            multiInstructionOptimization(inst, instructionsToRemove)) &&
-            inst.getType()->isFloatingPointTy() // Optimizations are for integer operations only
+            multiInstructionOptimization(inst, instructionsToRemove))
         ) {
             instructionsToRemove.push_back(&inst);
             isChanged = true;
