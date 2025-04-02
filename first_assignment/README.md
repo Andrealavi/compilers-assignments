@@ -68,11 +68,19 @@ make
 After successful compilation, the pass can be used with LLVM's `opt` tool:
 
 ```bash
-# Basic usage
+# Run all optimizations together with the combined pass
 opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts examples/single_function.ll -o optimized.ll
+
+# Run individual optimization passes separately
+opt -load-pass-plugin=build/libLocalOpts.so -passes=algebraic-identity examples/single_function.ll -o optimized.ll
+opt -load-pass-plugin=build/libLocalOpts.so -passes=strength-reduction examples/single_function.ll -o optimized.ll
+opt -load-pass-plugin=build/libLocalOpts.so -passes=multi-instruction examples/single_function.ll -o optimized.ll
 
 # With verbose output showing applied optimizations
 opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts -local-opts-verbose examples/single_function.ll -o optimized.ll
+
+# Verbose output also works with individual passes
+opt -load-pass-plugin=build/libLocalOpts.so -passes=algebraic-identity -local-opts-verbose examples/single_function.ll -o optimized.ll
 
 # View the optimized output
 llvm-dis optimized.ll -o - | less
@@ -87,7 +95,7 @@ opt -passes=mem2reg your_file.ll -S -o your_file.ll
 opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts your_file.ll -o your_file_optimized.ll
 ```
 
-The `-local-opts-verbose` flag enables detailed output about which optimizations were applied to each instruction, including the specific transformation type.
+The `-local-opts-verbose` flag enables detailed output about which optimizations were applied to each instruction, including the specific transformation type. This flag works with both the combined pass and individual optimization passes.
 
 ## Example Files
 
@@ -100,32 +108,20 @@ The `examples` directory contains several LLVM IR (.ll) files demonstrating diff
 
 ## Implementation Details
 
-The pass implements three main optimization categories, each with its own function:
+The pass implements three main optimization categories that can be run individually or combined:
 
-### Algebraic Identity Optimization
+1. **Algebraic Identity Optimization** (`-passes=algebraic-identity`):
+   - Recognizes and simplifies mathematical patterns based on algebraic laws
+   - Examples: `x - x = 0`, `x * 1 = x`, `x + 0 = x`
 
-The `algebraicIdentityOptimization()` function recognizes mathematical patterns that can be simplified:
-- Uses LLVM pattern matchers to identify binary operations with constants
-- Handles cases where operations have no effect (e.g., `x + 0 = x`)
-- Identifies operations that reduce to identity values (e.g., `x - x = 0`)
-- When an identity is found, replaces the instruction with a simpler equivalent
+2. **Strength Reduction** (`-passes=strength-reduction`):
+   - Converts computationally expensive operations to cheaper alternatives
+   - Examples: `x * 2^n → x << n`, `x / 2^n → x >> n`
 
-### Strength Reduction
+3. **Multi-Instruction Optimization** (`-passes=multi-instruction`):
+   - Identifies and eliminates canceling operations across instruction sequences
+   - Examples: `(x + c1) - c1 = x`, `(x * c1) / c1 = x`
 
-The `strengthReduction()` function converts computationally expensive operations to cheaper alternatives:
-- Decomposes constants into their binary components using the `getExpSet()` helper
-- Implements three main strategies:
-  1. For powers of 2: converts multiplication/division to shifts
-  2. For constants like 2^n-1: uses the pattern `(x << n) - x`
-  3. For constants with few set bits: creates a sequence of shift and add operations
-- Handles negative constants by negating the final result
-
-### Multi-Instruction Optimization
-
-The `multiInstructionOptimization()` function finds sequences of instructions where operations cancel out:
-- Uses a worklist algorithm to traverse chains of operations
-- Tracks accumulating constants to identify when operations neutralize each other
-- Handles complex patterns across multiple instructions
-- For cancellation patterns, replaces the sequence with the original variable
-
-When the `-local-opts-verbose` flag is enabled, the pass prints detailed information about each transformation, including the original instruction and the specific optimization rule that was applied.
+4. **Combined Optimization** (`-passes=local-opts`):
+   - Runs all three optimization types in sequence for maximum effect
+   - Particularly effective for complex code with multiple optimization opportunities
