@@ -4,6 +4,9 @@
 
 using namespace llvm;
 
+/**
+    Custom type used to select the right optimization pass
+*/
 typedef enum {
     ALGEBRAIC,
     STRENGTH,
