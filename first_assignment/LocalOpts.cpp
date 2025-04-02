@@ -243,7 +243,7 @@ bool strengthReduction(Instruction &inst) {
         // The number is converted to binary and a set with the exponents to use is created.
         // If the constant has a binary is equal to 2^(n-1)
         // the optimization x << c - x is applied
-        // Otherwise the strength reduction is applied by converting the multiplication into a sum of different power of two.
+        // Otherwise the strength reduction is applied by converting the multiplication into a sum of V with different powers of two.
         if (opCode == Instruction::Mul) {
             std::set<int> expSet = getExpSet(constantValue);
             int nBits = floor(log2(constantValue)) + 1;
