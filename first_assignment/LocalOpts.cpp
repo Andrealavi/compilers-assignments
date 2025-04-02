@@ -1,6 +1,4 @@
 #include "LocalOpts.hpp"
-#include <cstdint>
-#include <iostream>
 
 using namespace llvm;
 
