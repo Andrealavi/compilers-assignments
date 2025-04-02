@@ -65,37 +65,62 @@ make
 
 ## Running the Optimization Pass
 
-After successful compilation, the pass can be used with LLVM's `opt` tool:
+After successful compilation, the pass can be used with LLVM's `opt` tool in various configurations:
+
+### Running All Optimizations
 
 ```bash
 # Run all optimizations together with the combined pass
 opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts examples/single_function.ll -o optimized.ll
+```
 
-# Run individual optimization passes separately
+### Running Individual Optimization Passes
+
+```bash
+# Algebraic Identity Optimizations
 opt -load-pass-plugin=build/libLocalOpts.so -passes=algebraic-identity examples/single_function.ll -o optimized.ll
-opt -load-pass-plugin=build/libLocalOpts.so -passes=strength-reduction examples/single_function.ll -o optimized.ll
-opt -load-pass-plugin=build/libLocalOpts.so -passes=multi-instruction examples/single_function.ll -o optimized.ll
 
+# Strength Reduction
+opt -load-pass-plugin=build/libLocalOpts.so -passes=strength-reduction examples/single_function.ll -o optimized.ll
+
+# Multi-Instruction Optimizations
+opt -load-pass-plugin=build/libLocalOpts.so -passes=multi-instruction examples/single_function.ll -o optimized.ll
+```
+
+### Verbose Output Options
+
+```bash
 # With verbose output showing applied optimizations
 opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts -local-opts-verbose examples/single_function.ll -o optimized.ll
 
 # Verbose output also works with individual passes
 opt -load-pass-plugin=build/libLocalOpts.so -passes=algebraic-identity -local-opts-verbose examples/single_function.ll -o optimized.ll
+```
 
-# View the optimized output
+### Viewing Optimized Output
+
+```bash
+# View the optimized output with llvm-dis
 llvm-dis optimized.ll -o - | less
 
-# It's possible to use only opt and display the optimized file on stdout
+# Or display the optimized file directly on stdout
 opt -load-pass-plugin=./build/libLocalOpts.so -passes=local-opts examples/single_function.ll -S
+```
 
-# To use the pass with custom LLVM IR code derived from C++ files
-clang++ -O0 -Xclang -disable-O0-optnone -emit-llvm your_file.cpp -S -o your_file.ll # Generates LLVM IR without applying any optimization
+### Using with Custom C++ Code
 
+```bash
+# Generate LLVM IR from C++ without optimization
+clang++ -O0 -Xclang -disable-O0-optnone -emit-llvm your_file.cpp -S -o your_file.ll
+
+# Promote memory to registers (recommended before local optimizations)
 opt -passes=mem2reg your_file.ll -S -o your_file.ll
+
+# Apply local optimizations
 opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts your_file.ll -o your_file_optimized.ll
 ```
 
-The `-local-opts-verbose` flag enables detailed output about which optimizations were applied to each instruction, including the specific transformation type. This flag works with both the combined pass and individual optimization passes.
+The `-local-opts-verbose` flag enables detailed output about which optimizations were applied to each instruction, including the specific transformation type.
 
 ## Example Files
 
