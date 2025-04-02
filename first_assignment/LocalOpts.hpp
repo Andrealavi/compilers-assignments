@@ -23,6 +23,18 @@ namespace llvm {
         public:
             PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
     };
+    class AlgebraicIdentity : public PassInfoMixin<AlgebraicIdentity> {
+            public:
+                PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+    };
+    class StrengthReduction : public PassInfoMixin<StrengthReduction> {
+        public:
+            PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+    };
+    class MultiInstructionOpt : public PassInfoMixin<MultiInstructionOpt> {
+        public:
+            PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+    };
 } // namespace llvm
 
 #endif // LLVM_TRANSFORMS_TESTPASS _H

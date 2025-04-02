@@ -3,6 +3,13 @@
 
 using namespace llvm;
 
+typedef enum {
+    ALGEBRAIC,
+    STRENGTH,
+    MULTI,
+    ALL
+} opt;
+
 /**
  * Command-line option that enables verbose output for the optimizer.
  * When enabled, the pass will print detailed information about
@@ -517,24 +524,42 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
  * @param BB The basic block to optimize
  * @return true if any optimization was applied to any instruction
  */
-bool runOnBBOptimizations(BasicBlock &BB) {
+bool runOnBBOptimizations(BasicBlock &BB, opt type) {
     std::vector<Instruction*> instructionsToRemove;
 
     bool isChanged = false;
 
     for (Instruction &inst : BB) {
-        if (
-            !inst.getType()->isFloatingPointTy() && // Optimizations are for integer operations only
-            (algebraicIdentityOptimization(inst) ||
-            strengthReduction(inst) ||
-            multiInstructionOptimization(inst, instructionsToRemove))
-        ) {
-            if (find(instructionsToRemove.begin(), instructionsToRemove.end(), &inst) == instructionsToRemove.end()) {
+        if (!inst.getType()->isFloatingPointTy()) {
+            switch (type) {
+                case ALGEBRAIC:
+                    isChanged = algebraicIdentityOptimization(inst);
+                break;
+
+                case STRENGTH:
+                    isChanged = strengthReduction(inst);
+                break;
+
+                case MULTI:
+                    isChanged = multiInstructionOptimization(inst, instructionsToRemove);
+                break;
+
+                case ALL:
+                    isChanged = algebraicIdentityOptimization(inst) ||
+                        strengthReduction(inst) ||
+                        multiInstructionOptimization(inst, instructionsToRemove);
+                break;
+
+                default:
+                break;
+            }
+
+            if (isChanged && find(instructionsToRemove.begin(), instructionsToRemove.end(), &inst) == instructionsToRemove.end()) {
                 instructionsToRemove.push_back(&inst);
             }
-            isChanged = true;
         }
     }
+
 
     /*
     Note on alternative approach:
@@ -581,7 +606,7 @@ bool runOnBBOptimizations(BasicBlock &BB) {
  * @param F The LLVM Function to optimize
  * @return true if any basic block was transformed
  */
-bool runOnFunction(Function &F) {
+bool runOnFunction(Function &F, opt type) {
     bool Transformed = false;
 
     if (LocalOptsVerbose) {
@@ -591,7 +616,7 @@ bool runOnFunction(Function &F) {
     // Iterate over all basic blocks in the function
     for (auto Iter = F.begin(); Iter != F.end(); ++Iter) {
         // Apply optimizations to each basic block
-        if (runOnBBOptimizations(*Iter)) {
+        if (runOnBBOptimizations(*Iter, type)) {
             Transformed = true;
         }
     }
@@ -601,6 +626,57 @@ bool runOnFunction(Function &F) {
     }
 
     return Transformed;
+}
+
+PreservedAnalyses AlgebraicIdentity::run(Module &M, ModuleAnalysisManager &AM) {
+    bool transformed = false;
+
+    // Run optimizations on each function in the module
+    for (auto Fiter = M.begin(); Fiter != M.end(); ++Fiter)
+        if (runOnFunction(*Fiter, ALGEBRAIC)) {
+            transformed = true;
+        }
+
+    if (transformed)
+        // If any function was modified, invalidate all analyses
+        return PreservedAnalyses::none();
+
+    // If no changes were made, all analyses are preserved
+    return PreservedAnalyses::all();
+}
+
+PreservedAnalyses StrengthReduction::run(Module &M, ModuleAnalysisManager &AM) {
+    bool transformed = false;
+
+    // Run optimizations on each function in the module
+    for (auto Fiter = M.begin(); Fiter != M.end(); ++Fiter)
+        if (runOnFunction(*Fiter, STRENGTH)) {
+            transformed = true;
+        }
+
+    if (transformed)
+        // If any function was modified, invalidate all analyses
+        return PreservedAnalyses::none();
+
+    // If no changes were made, all analyses are preserved
+    return PreservedAnalyses::all();
+}
+
+PreservedAnalyses MultiInstructionOpt::run(Module &M, ModuleAnalysisManager &AM) {
+    bool transformed = false;
+
+    // Run optimizations on each function in the module
+    for (auto Fiter = M.begin(); Fiter != M.end(); ++Fiter)
+        if (runOnFunction(*Fiter, MULTI)) {
+            transformed = true;
+        }
+
+    if (transformed)
+        // If any function was modified, invalidate all analyses
+        return PreservedAnalyses::none();
+
+    // If no changes were made, all analyses are preserved
+    return PreservedAnalyses::all();
 }
 
 /**
@@ -624,7 +700,7 @@ PreservedAnalyses LocalOpts::run(Module &M, ModuleAnalysisManager &AM) {
 
     // Run optimizations on each function in the module
     for (auto Fiter = M.begin(); Fiter != M.end(); ++Fiter)
-        if (runOnFunction(*Fiter)) {
+        if (runOnFunction(*Fiter, ALL)) {
             transformed = true;
         }
 
@@ -657,6 +733,19 @@ PassPluginLibraryInfo getLocalOptsPluginInfo() {
                         MPM.addPass(LocalOpts());
                         return true;
                     }
+                    if (Name == "algebraic-identity") {
+                        MPM.addPass(AlgebraicIdentity());
+                        return true;
+                    }
+                    if (Name == "strength-reduction") {
+                        MPM.addPass(StrengthReduction());
+                        return true;
+                    }
+                    if (Name == "multi-instruction") {
+                        MPM.addPass(MultiInstructionOpt());
+                        return true;
+                    }
+
                     return false;
                 });
         }};
