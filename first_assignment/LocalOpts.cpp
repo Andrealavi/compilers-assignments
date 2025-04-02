@@ -507,14 +507,15 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
 }
 
 /**
- * Apply all available optimizations to every instruction in a basic block.
+ * Apply specified optimizations to every instruction in a basic block.
  *
  * This function iterates through each instruction in the provided basic block and
- * tries to apply the following optimizations in sequence:
+ * applies optimizations based on the specified optimization type:
  *
  * 1. Algebraic Identity Optimizations - simplify based on mathematical rules
  * 2. Strength Reduction - replace expensive operations with cheaper ones
  * 3. Multi-Instruction Optimization - eliminate sequences of inverse operations
+ * 4. All Optimizations - apply all available optimizations in sequence
  *
  * Implementation details:
  * - Skips floating point operations (only optimizes integer operations)
@@ -526,6 +527,7 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
  * as it only removes instructions that our specific optimizations have replaced.
  *
  * @param BB The basic block to optimize
+ * @param type The specific optimization type to apply (ALGEBRAIC, STRENGTH, MULTI, or ALL)
  * @return true if any optimization was applied to any instruction
  */
 bool runOnBBOptimizations(BasicBlock &BB, opt type) {
@@ -596,18 +598,19 @@ bool runOnBBOptimizations(BasicBlock &BB, opt type) {
 }
 
 /**
- * Run all optimization passes on every basic block in a function.
+ * Run specified optimization passes on every basic block in a function.
  *
  * This function coordinates the optimization process at the function level,
  * iterating through each basic block in the function and applying the
- * optimization routines. It provides verbose output about the optimization
+ * selected optimization type. It provides verbose output about the optimization
  * process when enabled.
  *
  * The function serves as an intermediate layer between module-level optimization
- * and basic block-level optimizations, allowing for function-specific processing
- * if needed in the future.
+ * and basic block-level optimizations, dispatching the appropriate optimization
+ * strategy based on the type parameter.
  *
  * @param F The LLVM Function to optimize
+ * @param type The specific optimization type to apply (ALGEBRAIC, STRENGTH, MULTI, or ALL)
  * @return true if any basic block was transformed
  */
 bool runOnFunction(Function &F, opt type) {
@@ -632,6 +635,16 @@ bool runOnFunction(Function &F, opt type) {
     return Transformed;
 }
 
+/**
+ * Applies algebraic identity optimizations to a module.
+ *
+ * This pass implements algebraic simplification rules to optimize code,
+ * such as x+0=x, x*1=x, etc.
+ *
+ * @param M The LLVM Module to optimize
+ * @param AM The module analysis manager providing analysis results
+ * @return PreservedAnalyses indicating which analyses are preserved after optimization
+ */
 PreservedAnalyses AlgebraicIdentity::run(Module &M, ModuleAnalysisManager &AM) {
     bool transformed = false;
 
@@ -649,6 +662,16 @@ PreservedAnalyses AlgebraicIdentity::run(Module &M, ModuleAnalysisManager &AM) {
     return PreservedAnalyses::all();
 }
 
+/**
+ * Applies strength reduction optimizations to a module.
+ *
+ * This pass replaces expensive operations with equivalent but cheaper ones,
+ * such as replacing multiplication by powers of 2 with left shifts.
+ *
+ * @param M The LLVM Module to optimize
+ * @param AM The module analysis manager providing analysis results
+ * @return PreservedAnalyses indicating which analyses are preserved after optimization
+ */
 PreservedAnalyses StrengthReduction::run(Module &M, ModuleAnalysisManager &AM) {
     bool transformed = false;
 
@@ -666,6 +689,16 @@ PreservedAnalyses StrengthReduction::run(Module &M, ModuleAnalysisManager &AM) {
     return PreservedAnalyses::all();
 }
 
+/**
+ * Applies multi-instruction optimizations to a module.
+ *
+ * This pass identifies and eliminates sequences of instructions that cancel
+ * each other out or can be combined into simpler forms.
+ *
+ * @param M The LLVM Module to optimize
+ * @param AM The module analysis manager providing analysis results
+ * @return PreservedAnalyses indicating which analyses are preserved after optimization
+ */
 PreservedAnalyses MultiInstructionOpt::run(Module &M, ModuleAnalysisManager &AM) {
     bool transformed = false;
 
@@ -717,11 +750,15 @@ PreservedAnalyses LocalOpts::run(Module &M, ModuleAnalysisManager &AM) {
 }
 
 /**
- * This function creates the necessary information structure for the LLVM pass manager
- * to recognize and register our local optimization pass.
+ * Creates the necessary information structure for the LLVM pass manager
+ * to recognize and register our optimization passes.
  *
- * The registration callback allows the pass to be invoked via the command line
- * using the `-passes=local-opts` option with the LLVM opt tool.
+ * The registration callback allows the passes to be invoked via the command line
+ * using options like:
+ * - `-passes=local-opts` for all optimizations
+ * - `-passes=algebraic-identity` for algebraic simplifications only
+ * - `-passes=strength-reduction` for strength reduction only
+ * - `-passes=multi-instruction` for multi-instruction optimizations only
  *
  * @return PassPluginLibraryInfo struct with complete plugin registration details
  */
