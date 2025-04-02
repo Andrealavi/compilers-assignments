@@ -120,8 +120,6 @@ opt -passes=mem2reg your_file.ll -S -o your_file.ll
 opt -load-pass-plugin=build/libLocalOpts.so -passes=local-opts your_file.ll -o your_file_optimized.ll
 ```
 
-The `-local-opts-verbose` flag enables detailed output about which optimizations were applied to each instruction, including the specific transformation type.
-
 ## Example Files
 
 The `examples` directory contains several LLVM IR (.ll) files demonstrating different optimization scenarios:
