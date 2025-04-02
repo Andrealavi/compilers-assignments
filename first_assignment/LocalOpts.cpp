@@ -1,4 +1,5 @@
 #include "LocalOpts.hpp"
+#include <cstdint>
 #include <iostream>
 
 using namespace llvm;
@@ -424,16 +425,19 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
                 }
 
                 int64_t temp = 0;
+                int64_t rem = 1;
 
                 if (areDiscordant) {
                     temp = constantValue + varC->getSExtValue();
                 } else {
                     if (
-                        opCode == Instruction::Mul ||
+                        (opCode == Instruction::Mul ||
                         opCode == Instruction::UDiv ||
-                        opCode == Instruction::SDiv
+                        opCode == Instruction::SDiv) &&
+                        constantValue > varC->getSExtValue()
                     ) {
                         temp = constantValue / varC->getSExtValue();
+                        rem = constantValue % varC->getSExtValue();
                     } else {
                         temp = constantValue - varC->getSExtValue();
                     }
@@ -441,7 +445,7 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
 
                 if (
                     temp == 0 ||
-                    (temp == 1 && (opCode == Instruction::Mul || opCode == Instruction::UDiv || opCode == Instruction::SDiv))
+                    (temp == 1 && rem == 0 && (opCode == Instruction::Mul || opCode == Instruction::UDiv || opCode == Instruction::SDiv))
                 ) {
                     canOptimize = true;
                 } else if (temp > 0) {
