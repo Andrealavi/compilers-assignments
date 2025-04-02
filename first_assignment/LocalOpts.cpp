@@ -1,4 +1,5 @@
 #include "LocalOpts.hpp"
+#include <iostream>
 
 using namespace llvm;
 
@@ -466,7 +467,21 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
             instructionsToRemove.push_back(&inst);
 
             for (Instruction *inst : specular_inst) {
-                if (inst->hasNUses(1)) instructionsToRemove.push_back(inst);
+                if (inst->hasNUses(1)) {
+                    instructionsToRemove.push_back(inst);
+                } else {
+                    bool canRemove = false;
+
+                    for (User *user : inst->users()) {
+                        if (user == inst ||
+                            find(instructionsToRemove.begin(), instructionsToRemove.end(), user) != instructionsToRemove.end()
+                        ) {
+                            canRemove = true;
+                        }
+                    }
+
+                    if (canRemove) instructionsToRemove.push_back(inst);
+                }
             }
 
             // If so, we can simplify to just the original variable
