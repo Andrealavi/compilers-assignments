@@ -12,6 +12,12 @@
 
 using namespace llvm;
 
+/**
+    Computes the intersetction between two maps
+
+    It is used in blockConstants function in order to obtain the input map
+    from predecessors
+*/
 std::map<Value*, int> computeIntersection(BasicBlock &BB, std::map<BasicBlock*, std::map<Value*, int>> &blocksConstants) {
     bool isFirst = true;
     std::map<Value*, int> res;
@@ -40,6 +46,10 @@ std::map<Value*, int> computeIntersection(BasicBlock &BB, std::map<BasicBlock*, 
     return res;
 }
 
+/**
+    Returns the first instruction to be a load.
+    If both instruction are not LoadInst, nullptr is returned
+*/
 LoadInst* getLoad(Value *inst1, Value *inst2) {
     LoadInst *load1 = dyn_cast<LoadInst>(inst1);
     LoadInst *load2 = dyn_cast<LoadInst>(inst2);
@@ -47,12 +57,19 @@ LoadInst* getLoad(Value *inst1, Value *inst2) {
     return load1 ? load1 : load2;
 }
 
+/**
+    Returns true if both instruction are LoadInst, false otherwise
+*/
 bool bothLoad(Value *lhs, Value *rhs) {
     if (dyn_cast<LoadInst>(lhs) && dyn_cast<LoadInst>(rhs)) return true;
 
     return false;
 }
 
+/**
+    Helper function used to perform the right algebric operation
+    based on the instruction opcode.
+*/
 int performOp(int val1, int val2, uint64_t opCode) {
     int res = INFINITY;
 
@@ -81,10 +98,30 @@ int performOp(int val1, int val2, uint64_t opCode) {
     return res;
 }
 
+/**
+    Returns true if the given argument is the first
+    in the instruction
+*/
 bool isFirst(Instruction &inst, Value *V) {
     return inst.getOperand(0) == V;
 }
 
+/**
+    Recursive function that computes the constant value to add to the constants map
+
+    Makes use of llvm PatternMatch module in order to find binary operations of the type:
+    - Value ⊕ Value
+    - Value ⊕ Constant
+
+    Base case:
+        - val1 ⊕ val2 ==> both operands in the instructions are known constants.
+            The result of the operation is returned
+        - the instruction does not respect the criteria ==> returns INFINITY
+
+    Recursive case:
+        - One of the two operand is an instruction different from load ==>
+            calls the function with the operand instruction as the inst argument
+*/
 int computeConstant(Instruction &inst, std::map<Value*, int> &blockConstants) {
     Value* LHS = nullptr;
     Value* RHS = nullptr;
@@ -154,6 +191,11 @@ int computeConstant(Instruction &inst, std::map<Value*, int> &blockConstants) {
     return INFINITY;
 }
 
+/**
+    Computes the constants for the given block.
+
+    Returns true if the block's constants were changed, false otherwise
+*/
 bool blockConstants(BasicBlock &BB, std::map<BasicBlock*, std::map<Value*, int>> &blocksConstants) {
     bool isChanged = false;
     std::map<Value*, int> blockConstants = computeIntersection(BB, blocksConstants);
@@ -187,12 +229,19 @@ bool blockConstants(BasicBlock &BB, std::map<BasicBlock*, std::map<Value*, int>>
     return isChanged;
 }
 
+/**
+    Computes constant propagation information for the given function
+
+    Returns true if at least one block's constant have been changed
+*/
 bool constantPropagation(Function &F, std::map<BasicBlock*, std::map<Value*, int>> &blocksConstants) {
+    bool transformed = false;
+
     for (BasicBlock &BB : F) {
-        if (blockConstants(BB, blocksConstants)) return true;
+        if (blockConstants(BB, blocksConstants)) transformed = true;
     }
 
-    return false;
+    return transformed;
 }
 
 PreservedAnalyses ConstantPropagation::run(Module &M, ModuleAnalysisManager &AM) {
