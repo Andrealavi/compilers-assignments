@@ -1,5 +1,4 @@
 #include "reachingDefinitions.hpp"
-#include <llvm-19/llvm/Analysis/AliasAnalysis.h>
 
 using namespace llvm;
 
@@ -84,7 +83,7 @@ PreservedAnalyses ReachingDefinitions::run(Module &M, ModuleAnalysisManager &AM)
 
 
 PassPluginLibraryInfo getReachingDefinitionsPluginInfo() {
-    return {LLVM_PLUGIN_API_VERSION, "LocalOpts", LLVM_VERSION_STRING,
+    return {LLVM_PLUGIN_API_VERSION, "Reaching Definitions", LLVM_VERSION_STRING,
         [](PassBuilder &PB) {
             // Register the pass with the pass builder
             PB.registerPipelineParsingCallback(
