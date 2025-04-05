@@ -12,33 +12,6 @@
 
 using namespace llvm;
 
-bool checkStore(std::pair<Value* const, int> &p1, std::pair<Value* const, int> &p2) {
-    Instruction *inst1 = dyn_cast<Instruction>(p1.first);
-    Instruction *inst2 = dyn_cast<Instruction>(p2.first);
-
-    if (!dyn_cast<StoreInst>(inst1) && !dyn_cast<StoreInst>(inst2) && p1.second == p2.second) {
-        StoreInst *store1, *store2;
-
-        for (User *user : inst1->users()) {
-            store1 = dyn_cast<StoreInst>(user);
-
-            if (user) break;
-        }
-
-        for (User *user : inst2->users()) {
-            store2 = dyn_cast<StoreInst>(user);
-
-            if (user) break;
-        }
-
-        if (store1 && store2 && store1->getPointerOperand() == store2->getPointerOperand()) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 std::map<Value*, int> computeIntersection(BasicBlock &BB, std::map<BasicBlock*, std::map<Value*, int>> &blocksConstants) {
     bool isFirst = true;
     std::map<Value*, int> res;
@@ -57,7 +30,6 @@ std::map<Value*, int> computeIntersection(BasicBlock &BB, std::map<BasicBlock*, 
             for (auto &rPair : res) {
                 for (auto &pPair : blocksConstants[pred]) {
                     if (rPair == pPair) temp[rPair.first] = rPair.second;
-                    //else if (checkStore(rPair, pPair)) temp[rPair.first] = rPair.second;
                 }
             }
 
@@ -68,61 +40,59 @@ std::map<Value*, int> computeIntersection(BasicBlock &BB, std::map<BasicBlock*, 
     return res;
 }
 
+LoadInst* getLoad(Value *inst1, Value *inst2) {
+    LoadInst *load1 = dyn_cast<LoadInst>(inst1);
+    LoadInst *load2 = dyn_cast<LoadInst>(inst2);
 
+    return load1 ? load1 : load2;
+}
+
+bool bothLoad(Value *lhs, Value *rhs) {
+    if (dyn_cast<LoadInst>(lhs) && dyn_cast<LoadInst>(rhs)) return true;
+
+    return false;
+}
 
 int computeConstant(Instruction &inst, std::map<Value*, int> &blockConstants) {
-    if (inst.isBinaryOp()) {
-        Value* LHS = nullptr;
-        Value* RHS = nullptr;
-        ConstantInt *C = nullptr;
+    Value* LHS = nullptr;
+    Value* RHS = nullptr;
+    ConstantInt *C = nullptr;
 
-        if (
-            PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_ConstantInt(C))) ||
-            PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(LHS))) ||
-            PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_Value(RHS)))
-        ) {
-            if (C) {
-                if (LoadInst *LI = dyn_cast<LoadInst>(LHS)) {
-                    Value* ptr = LI->getPointerOperand();
+    if (
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_ConstantInt(C))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(LHS))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_Value(RHS)))
+    ) {
+        if (C) {
+            if (LoadInst *LI = dyn_cast<LoadInst>(LHS)) {
+                Value* ptr = LI->getPointerOperand();
 
-                    if (blockConstants.find(ptr) != blockConstants.end()) return C->getSExtValue() + blockConstants[ptr];
-                    else return INFINITY;
-                } else if (Instruction *opInst = dyn_cast<Instruction>(LHS)) return computeConstant(*opInst, blockConstants) + C->getSExtValue();
-                else return INFINITY;
-            } else {
-                if (LoadInst *LLHS = dyn_cast<LoadInst>(LHS)) {
-                    if (LoadInst *LRHS = dyn_cast<LoadInst>(RHS)) {
-                        Value *lhsPtr = LLHS->getPointerOperand();
-                        Value *rhsPtr = LRHS->getPointerOperand();
-
-                        if (
-                            blockConstants.find(lhsPtr) != blockConstants.end() &&
-                            blockConstants.find(rhsPtr) != blockConstants.end()
-                        ) return blockConstants[lhsPtr] + blockConstants[rhsPtr];
-                        else return INFINITY;
-                    } else if (Instruction *rhsInst = dyn_cast<Instruction>(RHS)) {
-                        Value *lhsPtr = LLHS->getPointerOperand();
-
-                        if (blockConstants.find(lhsPtr) != blockConstants.end()) return computeConstant(*rhsInst, blockConstants) + blockConstants[lhsPtr];
-                        else return INFINITY;
-                    }
-                } else if (LoadInst *LRHS = dyn_cast<LoadInst>(RHS)) {
-                    if (LoadInst *LLHS = dyn_cast<LoadInst>(LHS)) {
-                        Value *lhsPtr = LLHS->getPointerOperand();
-                        Value *rhsPtr = LRHS->getPointerOperand();
-
-                        if (
-                            blockConstants.find(lhsPtr) != blockConstants.end() &&
-                            blockConstants.find(rhsPtr) != blockConstants.end()
-                        ) return blockConstants[lhsPtr] + blockConstants[rhsPtr];
-                        else return INFINITY;
-                    } else if (Instruction *lhsInst = dyn_cast<Instruction>(LHS)) {
-                        Value *rhsPtr = LRHS->getPointerOperand();
-
-                        if (blockConstants.find(rhsPtr) != blockConstants.end()) return computeConstant(*lhsInst, blockConstants) + blockConstants[rhsPtr];
-                        else return INFINITY;
-                    }
+                if (blockConstants.find(ptr) != blockConstants.end()) {
+                    return C->getSExtValue() + blockConstants[ptr];
                 }
+            } else if (Instruction *opInst = dyn_cast<Instruction>(LHS)) {
+                return computeConstant(*opInst, blockConstants) + C->getSExtValue();
+            }
+        } else if (bothLoad(LHS, RHS)) {
+            LoadInst *lhsLoad = cast<LoadInst>(LHS);
+            LoadInst *rhsLoad = cast<LoadInst>(RHS);
+
+            Value *lhsPtr = lhsLoad->getPointerOperand();
+            Value *rhsPtr = rhsLoad->getPointerOperand();
+
+            if (
+                blockConstants.find(lhsPtr) != blockConstants.end() &&
+                blockConstants.find(rhsPtr) != blockConstants.end()
+            ) {
+                return blockConstants[lhsPtr] + blockConstants[rhsPtr];
+            }
+        } else if (LoadInst *LI = getLoad(LHS, RHS)) {
+            Value *nonLoad = LI == LHS ? RHS : LHS;
+            Instruction *nonLoadInst = dyn_cast<Instruction>(nonLoad);
+            Value *ptr = LI->getPointerOperand();
+
+            if (nonLoadInst && blockConstants.find(ptr) != blockConstants.end()) {
+                return computeConstant(*nonLoadInst, blockConstants) + blockConstants[ptr];
             }
         }
     }
@@ -150,7 +120,6 @@ bool blockConstants(BasicBlock &BB, std::map<BasicBlock*, std::map<Value*, int>>
 
                 if (constValue != INFINITY) blockConstants[ptr] = constValue;
             }
-
         } else {
             continue;
         }
