@@ -1,5 +1,4 @@
 #include "dominatorAnalysis.hpp"
-#include <llvm-19/llvm/IR/BasicBlock.h>
 
 using namespace llvm;
 
@@ -49,11 +48,8 @@ bool dominatorAnalysis(Function &F, std::map<BasicBlock*, std::set<BasicBlock*>>
 }
 
 PreservedAnalyses DominatorAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
-    FunctionAnalysisManager &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
-
     // Run optimizations on each function in the module
     for (auto Fiter = M.begin(); Fiter != M.end(); ++Fiter) {
-        AliasAnalysis &AA = FAM.getResult<AAManager>(*Fiter);
         std::map<BasicBlock*, std::set<BasicBlock*>> blocksDoms;
         while (dominatorAnalysis(*Fiter, blocksDoms)) {};
 
@@ -83,7 +79,6 @@ PassPluginLibraryInfo getDominatorAnalysisPluginInfo() {
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, ModulePassManager &MPM,
                    ArrayRef<PassBuilder::PipelineElement>) -> bool {
-                    // Allow the pass to be invoked via -passes=reaching-definitions
                     if (Name == "dominator-analysis") {
                         MPM.addPass(DominatorAnalysis());
                         return true;

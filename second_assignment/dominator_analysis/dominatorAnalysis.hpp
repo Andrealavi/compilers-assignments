@@ -4,7 +4,6 @@
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/IR/Value.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Instructions.h"
