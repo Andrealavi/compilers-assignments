@@ -1,12 +1,4 @@
 #include "constantPropagation.hpp"
-#include <llvm-19/llvm/Analysis/LoopInfo.h>
-#include <llvm-19/llvm/IR/BasicBlock.h>
-#include <llvm-19/llvm/IR/CFG.h>
-#include <llvm-19/llvm/IR/Constant.h>
-#include <llvm-19/llvm/IR/Constants.h>
-#include <llvm-19/llvm/IR/Instruction.h>
-#include <llvm-19/llvm/IR/Instructions.h>
-#include <llvm-19/llvm/Support/Casting.h>
 
 #define INFINITY 2147483647
 

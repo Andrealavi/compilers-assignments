@@ -7,7 +7,6 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
-#include "llvm/Analysis/MemorySSA.h"
 #include "llvm/IR/PatternMatch.h"
 
 #include <map>
