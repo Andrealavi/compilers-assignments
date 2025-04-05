@@ -204,7 +204,7 @@ PreservedAnalyses VeryBusyExpressions::run(Module &M, ModuleAnalysisManager &AM)
 
 
 PassPluginLibraryInfo getVeryBusyExpressionsPluginInfo() {
-    return {LLVM_PLUGIN_API_VERSION, "Dominator Analysis", LLVM_VERSION_STRING,
+    return {LLVM_PLUGIN_API_VERSION, "Very Busy Expression", LLVM_VERSION_STRING,
         [](PassBuilder &PB) {
             // Register the pass with the pass builder
             PB.registerPipelineParsingCallback(
