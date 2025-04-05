@@ -53,26 +53,69 @@ bool bothLoad(Value *lhs, Value *rhs) {
     return false;
 }
 
+int performOp(int val1, int val2, uint64_t opCode) {
+    int res = INFINITY;
+
+    switch (opCode) {
+        case Instruction::Add:
+            res = val1 + val2;
+        break;
+
+        case Instruction::Sub:
+            res = val1 - val2;
+        break;
+
+        case Instruction::Mul:
+            res = val1 * val2;
+        break;
+
+        case Instruction::SDiv:
+        case Instruction::UDiv:
+            res = val1 / val2;
+        break;
+
+        default:
+        break;
+    }
+
+    return res;
+}
+
+bool isFirst(Instruction &inst, Value *V) {
+    return inst.getOperand(0) == V;
+}
+
 int computeConstant(Instruction &inst, std::map<Value*, int> &blockConstants) {
     Value* LHS = nullptr;
     Value* RHS = nullptr;
     ConstantInt *C = nullptr;
+
+    int val1 = INFINITY;
+    int val2 = INFINITY;
+    uint64_t opCode = inst.getOpcode();
+    bool isVal1First = false;
 
     if (
         PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_ConstantInt(C))) ||
         PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(LHS))) ||
         PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_Value(RHS)))
     ) {
+
         if (C) {
             if (LoadInst *LI = dyn_cast<LoadInst>(LHS)) {
                 Value* ptr = LI->getPointerOperand();
 
                 if (blockConstants.find(ptr) != blockConstants.end()) {
-                    return C->getSExtValue() + blockConstants[ptr];
+                    val1 = blockConstants[ptr];
                 }
             } else if (Instruction *opInst = dyn_cast<Instruction>(LHS)) {
-                return computeConstant(*opInst, blockConstants) + C->getSExtValue();
+                val1 = computeConstant(*opInst, blockConstants);
             }
+
+            val2 = C->getSExtValue();
+
+            if (isFirst(inst, LHS)) isVal1First = true;
+
         } else if (bothLoad(LHS, RHS)) {
             LoadInst *lhsLoad = cast<LoadInst>(LHS);
             LoadInst *rhsLoad = cast<LoadInst>(RHS);
@@ -84,7 +127,10 @@ int computeConstant(Instruction &inst, std::map<Value*, int> &blockConstants) {
                 blockConstants.find(lhsPtr) != blockConstants.end() &&
                 blockConstants.find(rhsPtr) != blockConstants.end()
             ) {
-                return blockConstants[lhsPtr] + blockConstants[rhsPtr];
+                val1 = blockConstants[lhsPtr];
+                val2 = blockConstants[rhsPtr];
+
+                isVal1First = true;
             }
         } else if (LoadInst *LI = getLoad(LHS, RHS)) {
             Value *nonLoad = LI == LHS ? RHS : LHS;
@@ -92,9 +138,17 @@ int computeConstant(Instruction &inst, std::map<Value*, int> &blockConstants) {
             Value *ptr = LI->getPointerOperand();
 
             if (nonLoadInst && blockConstants.find(ptr) != blockConstants.end()) {
-                return computeConstant(*nonLoadInst, blockConstants) + blockConstants[ptr];
+                val1 = blockConstants[ptr];
+                val2 = computeConstant(*nonLoadInst, blockConstants);
+
+                if (LI == LHS) isVal1First = true;
             }
         }
+    }
+
+    if (val1 != INFINITY && val2 != INFINITY) {
+        if (isVal1First) return performOp(val1, val2, opCode);
+        else return performOp(val2, val1, opCode);
     }
 
     return INFINITY;
