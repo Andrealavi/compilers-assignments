@@ -1,4 +1,6 @@
 #include "veryBusyExpressions.hpp"
+#include <llvm-19/llvm/IR/BasicBlock.h>
+#include <llvm-19/llvm/IR/Instruction.h>
 
 using namespace llvm;
 
@@ -177,11 +179,30 @@ bool veryBusyExpressions(Function &F,  std::map<BasicBlock*, std::set<Instructio
     return isChanged;
 }
 
+void printIterationInfo(std::map<BasicBlock*, std::set<Instruction*>> &busyInsts, int iteration) {
+    outs() << "Output after iteration " << iteration << "\n\n";
+
+    for (auto &pair : busyInsts) {
+        outs() << "Very busy expressions for basic block: " << pair.first->getName() << "\n";
+
+        for (auto &busy : pair.second) {
+            busy->print(outs());
+            outs() << "\n";
+        }
+    }
+
+    outs() << "-------------------\n\n";
+}
+
 PreservedAnalyses VeryBusyExpressions::run(Module &M, ModuleAnalysisManager &AM) {
     // Run optimizations on each function in the module
     for (auto Fiter = M.begin(); Fiter != M.end(); ++Fiter) {
         std::map<BasicBlock*, std::set<Instruction*>> busyInsts;
-        while (veryBusyExpressions(*Fiter, busyInsts)) {};
+        int n = 1;
+
+        while (veryBusyExpressions(*Fiter, busyInsts)) { printIterationInfo(busyInsts, n); n++;};
+
+        outs() << "Final output after " << n << " iterations\n\n";
 
         outs() << "Dominators for function: " << Fiter->getName();
         outs() << "\n\n";
