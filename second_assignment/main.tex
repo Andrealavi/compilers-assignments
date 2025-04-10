@@ -224,7 +224,6 @@ We say that a couple $<variable, constant>$ is valid at block $n$ if it is guara
 		\textbf{BB12} & \makecell{$<k,4>, <a, 4>,$                                                \\ $<b,2>, <x,8>$}             & \makecell{$<k,2>, <a, 4>,$ \\ $<b,2>, <x,8>, <y,8>$} \\ \hline
 		\textbf{BB13} & \makecell{$<k,4>, <a, 4>,$                                                \\  $<b,2>, <x,8>, <y,8>$}       & \makecell{$<k,5>, <a, 4>,$ \\ $<b,2>, <x,8>, <y,8>$} \\ \hline
 		\textbf{BB14} & $<k,4>, <a, 4>$                           & $<k,4>, <a, 4>$               \\ \hline
-		\textbf{BB15} & $<k,4>, <a, 4>$                           & $<k,4>, <a, 4>$               \\ \hline
 	\end{tabular}
 	\caption{Constant Propagation Algorithm Execution Table (Iteration 1)}
 \end{table}
@@ -233,23 +232,22 @@ We say that a couple $<variable, constant>$ is valid at block $n$ if it is guara
 	\centering
 	\begin{tabular}{|c|c|c|c|c|c|c|}
 		\hline
-		              & \multicolumn{2}{c|}{\textbf{Iteration 2}}                                 \\ \hline
-		              & \textbf{IN[B]}                            & \textbf{OUT[B]}               \\ \hline
-		\textbf{BB1}  & $\varnothing$                             & $<k,2>$                       \\ \hline
-		\textbf{BB2}  & $\varnothing$                             & $<k,2>$                       \\ \hline
-		\textbf{BB3}  & $<k,2>$                                   & $<k,2>$                       \\ \hline
-		\textbf{BB4}  & $<k,2>$                                   & $<k,2>, <a, 4>$               \\ \hline
-		\textbf{BB5}  & $<k,2>$                                   & $<k,2>, <a, 4>$               \\ \hline
-		\textbf{BB6}  & $<k,2>, <a, 4>$                           & $<k,2>, <a, 4>, <x, 5>$       \\ \hline
-		\textbf{BB7}  & $<k,2>, <a, 4>$                           & $<k,2>, <a, 4>, <x, 8>$       \\ \hline
-		\textbf{BB8}  & $<k,2>, <a, 4>$                           & $<k,4>, <a, 4>$               \\ \hline
-		\textbf{BB9}  & $<a, 4>$                                  & $<a, 4>$                      \\ \hline
-		\textbf{BB10} & $ <a, 4>$                                 & $<a, 4>, <b,2>$               \\ \hline
-		\textbf{BB11} & $ <a, 4>, <b,2>$                          & $<k,8>, <a, 4>, <b,2>$        \\ \hline
-		\textbf{BB12} & $<a, 4>, <b,2>$                           & $<a, 4>, <b,2>, <y,8>$        \\ \hline
-		\textbf{BB13} & $<a, 4>, <b,2>, <y,8>$                    & $<k,5>, <a, 4>, <b,2>, <y,8>$ \\ \hline
-		\textbf{BB14} & $ <a, 4>$                                 & $<a, 4>$                      \\ \hline
-		\textbf{BB15} & $ <a, 4>$                                 & $<a, 4>$                      \\ \hline
+		              & \multicolumn{2}{c|}{\textbf{Iteration 2}}                           \\ \hline
+		              & \textbf{IN[B]}                            & \textbf{OUT[B]}         \\ \hline
+		\textbf{BB1}  & $\varnothing$                             & $<k,2>$                 \\ \hline
+		\textbf{BB2}  & $\varnothing$                             & $<k,2>$                 \\ \hline
+		\textbf{BB3}  & $<k,2>$                                   & $<k,2>$                 \\ \hline
+		\textbf{BB4}  & $<k,2>$                                   & $<k,2>, <a, 4>$         \\ \hline
+		\textbf{BB5}  & $<k,2>$                                   & $<k,2>, <a, 4>$         \\ \hline
+		\textbf{BB6}  & $<k,2>, <a, 4>$                           & $<k,2>, <a, 4>, <x, 5>$ \\ \hline
+		\textbf{BB7}  & $<k,2>, <a, 4>$                           & $<k,2>, <a, 4>, <x, 8>$ \\ \hline
+		\textbf{BB8}  & $<k,2>, <a, 4>$                           & $<k,4>, <a, 4>$         \\ \hline
+		\textbf{BB9}  & $<a, 4>$                                  & $<a, 4>$                \\ \hline
+		\textbf{BB10} & $ <a, 4>$                                 & $<a, 4>, <b,2>$         \\ \hline
+		\textbf{BB11} & $ <a, 4>, <b,2>$                          & $<a, 4>, <b,2>$         \\ \hline
+		\textbf{BB12} & $<a, 4>, <b,2>$                           & $<a, 4>, <b,2>, <y,8>$  \\ \hline
+		\textbf{BB13} & $<a, 4>, <b,2>, <y,8>$                    & $<a, 4>, <b,2>, <y,8>$  \\ \hline
+		\textbf{BB14} & $ <a, 4>$                                 & $<a, 4>$                \\ \hline
 	\end{tabular}
 	\caption{Constant Propagation Algorithm Execution Table (Iteration 2)}
 \end{table}
