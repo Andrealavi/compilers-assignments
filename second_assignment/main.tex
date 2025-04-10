@@ -88,22 +88,21 @@ Formally an expression is said to be \textbf{very busy} when it is computed alon
 
 \begin{table}[H]
 	\centering
-	\begin{tabular}{|c|c|c|c|c|c|c|}
+	\begin{tabular}{|c|c|c|c|c|}
 		\hline
-		             & \multicolumn{2}{c|}{\textbf{Iteration 1}} & \multicolumn{2}{c|}{\textbf{Iteration 2}} & \multicolumn{2}{c|}{\textbf{Iteration 3}}                                                      \\ \hline
-		             & \textbf{IN[B]}                            & \textbf{OUT[B]}                           & \textbf{IN[B]}                            & \textbf{OUT[B]} & \textbf{IN[B]} & \textbf{OUT[B]} \\ \hline
-		\textbf{BB1} & $\{b-a\}$                                 & $\{b-a\}$                                 &                                           &                 &                &                 \\ \hline
-		\textbf{BB2} & $\{b-a\}$                                 & $\{b-a\}$                                 &                                           &                 &                &                 \\ \hline
-		\textbf{BB3} & $\{b-a\}$                                 & $\{a-b\}$                                 &                                           &                 &                &                 \\ \hline
-		\textbf{BB4} & $\{a-b\}$                                 & $\varnothing$                             &                                           &                 &                &                 \\ \hline
-		\textbf{BB5} & $\{b - a\}$                               & $\varnothing$                             &                                           &                 &                &                 \\ \hline
-		\textbf{BB6} & $\varnothing$                             & $\{a-b\}$                                 &                                           &                 &                &                 \\ \hline
-		\textbf{BB7} & $\{a-b\}$                                 & $\varnothing$                             &                                           &                 &                &                 \\ \hline
-		\textbf{BB8} & $\varnothing$                             & $\varnothing$                             &                                           &                 &                &                 \\ \hline
+		             & \multicolumn{2}{c|}{\textbf{Iteration 1}} & \multicolumn{2}{c|}{\textbf{Iteration 2}}                                        \\ \hline
+		             & \textbf{IN[B]}                            & \textbf{OUT[B]}                           & \textbf{IN[B]}     & \textbf{OUT[B]} \\ \hline
+		\textbf{BB1} & $\{b-a\}$                                 & $\{b-a\}$                                 & $\{b-a\}$          & $\{b-a\}$       \\ \hline
+		\textbf{BB2} & $\{b-a\}$                                 & $\{b-a\}$                                 & $\{b-a\}$          & $\{b-a\}$       \\ \hline
+		\textbf{BB3} & $\{b-a\}, \{a-b\}$                        & $\{a-b\}$                                 & $\{b-a\}, \{a-b\}$ & $\{a-b\}$       \\ \hline
+		\textbf{BB4} & $\{a-b\}$                                 & $\varnothing$                             & $\{a-b\}$          & $\varnothing$   \\ \hline
+		\textbf{BB5} & $\{b - a\}$                               & $\varnothing$                             & $\{b - a\}$        & $\varnothing$   \\ \hline
+		\textbf{BB6} & $\varnothing$                             & $\{a-b\}$                                 & $\varnothing$      & $\{a-b\}$       \\ \hline
+		\textbf{BB7} & $\{a-b\}$                                 & $\varnothing$                             & $\{a-b\}$          & $\varnothing$   \\ \hline
+		\textbf{BB8} & $\varnothing$                             & $\varnothing$                             & $\varnothing$      & $\varnothing$   \\ \hline
 	\end{tabular}
 	\caption{Very Busy Expression Algorithm Execution Table}
 \end{table}
-
 
 % --- Dominator Analysis --- %
 \section{Dominator Analysis}
