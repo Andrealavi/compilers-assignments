@@ -236,11 +236,30 @@ bool constantPropagation(Function &F, std::map<BasicBlock*, std::map<Value*, int
     return transformed;
 }
 
+void printIterationInfo(std::map<BasicBlock*, std::map<Value*, int>> &blocksConstants, int iteration) {
+    outs() << "Output after iteration " << iteration << "\n\n";
+
+    for (auto &pair : blocksConstants) {
+        outs() << "Constants for basic block: " << pair.first->getName() << "\n";
+
+        for (auto &constPair : pair.second) {
+            constPair.first->print(outs());
+            outs() << ": " << constPair.second << "\n";
+        }
+
+        outs() << "\n";
+    }
+
+    outs() << "-------------------\n\n";
+}
+
 PreservedAnalyses ConstantPropagation::run(Module &M, ModuleAnalysisManager &AM) {
     // Run optimizations on each function in the module
     for (auto Fiter = M.begin(); Fiter != M.end(); ++Fiter) {
         std::map<BasicBlock*, std::map<Value*, int>> blocksConstants;
-        while (constantPropagation(*Fiter, blocksConstants)) {};
+        int n = 0;
+
+        while (constantPropagation(*Fiter, blocksConstants)) { printIterationInfo(blocksConstants, n); n++; };
 
         outs() << "Constants for function: " << Fiter->getName();
         outs() << "\n\n";
