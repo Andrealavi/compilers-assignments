@@ -47,11 +47,30 @@ bool dominatorAnalysis(Function &F, std::map<BasicBlock*, std::set<BasicBlock*>>
     return isChanged;
 }
 
+void printIterationInfo(std::map<BasicBlock*, std::set<BasicBlock*>> &blocksDoms, int iteration) {
+    outs() << "Output after iteration " << iteration << "\n\n";
+
+    for (auto &pair : blocksDoms) {
+        outs() << "Dominators for basic block: " << pair.first->getName() << "\n";
+
+        for (BasicBlock *dom : pair.second) {
+            outs() << dom->getName();
+            outs() << "\n";
+        }
+    }
+
+    outs() << "-------------------\n\n";
+}
+
 PreservedAnalyses DominatorAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
     // Run optimizations on each function in the module
     for (auto Fiter = M.begin(); Fiter != M.end(); ++Fiter) {
         std::map<BasicBlock*, std::set<BasicBlock*>> blocksDoms;
-        while (dominatorAnalysis(*Fiter, blocksDoms)) {};
+        int n = 1;
+
+        while (dominatorAnalysis(*Fiter, blocksDoms)) { printIterationInfo(blocksDoms, n); n++; };
+
+        outs() << "Final output after " << n << " iterations\n\n";
 
         outs() << "Dominators for function: " << Fiter->getName();
         outs() << "\n\n";
