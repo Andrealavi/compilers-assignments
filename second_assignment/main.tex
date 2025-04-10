@@ -12,6 +12,7 @@
 \usepackage{tikz}
 \usepackage{amssymb}
 \usepackage{booktabs}
+\usepackage{makecell}
 \usepackage{subcaption}
 \usepackage{booktabs}     % Professional tables
 \usepackage{hyperref}     % PDF bookmarks and hyperlinks
@@ -28,7 +29,7 @@
 }
 
 
-\title{Data-Flow Analysis and Second Assignment}
+\title{Second Assignment}
 \author{Andrea Lavino}
 \date{March 2025}
 
@@ -42,313 +43,6 @@
 
 \clearpage
 
-\section{Data-Flow Analysis}
-
-Compiler optimizations rely heavily on the analysis of intermediate representation code. These analysis can be categorized into three levels: (1) local, (2) global and (3) interprocedural.
-
-Local analysis focuses on a single basic block and its instruction, whereas global analysis evaluates the entire control flow graph, usually related to a single procedure. Finally, interprocedural analysis gathers information across multiple procedures to enable broader optimizations. 
-
-Data-flow analysis is a collection of techniques, within the global analysis category, used to extract information about basic blocks and their effects, with the purpose of providing valuable information to the compiler optimizer. Without these information, the compiler would not be able to perform complex optimizations efficiently.
-
-Before diving into some examples of the data-flow analysis problems, it is crucial to understand what can be the effects of instructions and basic blocks and to understand the common framework for data-flow analysis problems.
-
-\subsection{Instruction Effects}
-
-Every instruction of the type $a = b + c$ can have three effects:
-
-\begin{itemize}
-    \item Uses: the instruction uses the variables $b$ and $c$ in order to compute the value of $a$
-    \item Kills: the instruction kills a previous definition of $a$
-    \item Defines: the instruction defines the variable $a$
-\end{itemize}
-
-The effects of every instruction compound creating the effect of the whole basic block
-
-\subsection{Basic-Block Effects}
-
-As the instructions, even a basic block can have three effects:
-
-\begin{itemize}
-    \item locally exposed use: the basic block uses a variable that it is not preivously defined within the BB, therefore uses a variable that was defined before the basic block entry point
-    \item kills: every variable definition within the BB kills all the other definitions that have reached the basic block
-    \item locally available definition: the basic block uses a variable that was previously defined in the same block
-\end{itemize}
-
-\subsubsection{Example}
-
-Here there is a small example of the effects that a basic block can have.
-
-\begin{tikzpicture}
-    \node[anchor=north west, text width=4cm] (code) {
-\begin{lstlisting}[basicstyle=\ttfamily]
-t1 = r1 + r2
-r2 = t1
-t2 = r2 + r1
-r1 = t2
-t3 = r1 * r1
-r2 = t3
-if r2 > 100 goto L1
-\end{lstlisting}
-    };
-
-    % Add some text near the listing
-    % Add some text near the listing with line-spacing
-    \node[anchor=west, text width=5cm] at ([xshift=1.5cm]code.east) {
-        \begin{minipage}{5cm}
-            \baselineskip=1.2\baselineskip
-            \textbf{Locally exposed use:} \texttt{r1, r2}
-            \textbf{Killed definitions:} \texttt{r1, r2}
-            \textbf{Locally available definitions:} \texttt{t1, t2, t3, r1, r2}
-        \end{minipage}
-    };
-
-
-\end{tikzpicture}
-
-\subsection{Data-Flow analysis problem structure}
-
- Each technique that lies in the domain of data-flow analysis aims at solving a specific problem regarding gaining a certain knowledge about the code. Therefore, it is fundamental to clearly state our goal and define what we are trying to find about the program.
-
- After having properly defined the problem, we need to define its transfer functions, i.e. the function that maps basic blocks inputs to its outputs and viceversa, depending on the problem type (forward or backward).
-
- Besides the transfer function, other important elements that helps properly define the problem are the boundary and initial conditions of each basic block, the direction of the data flow (forward or backward) and the meet operator.
-
- All of the problem informations can be summarized using a simple table representation, like the following:
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|p{0.4\textwidth}|p{0.4\textwidth}|}
-\hline
- & \textbf{Dataflow Problem X} \\
-\hline
-Domain & ? \\
-\hline
-Direction & ? \\
- & ? \\
- & ? \\
-\hline
-Transfer function & ? \\
-\hline
-Meet Operation ($\wedge$) & ? \\
-\hline
-Boundary Condition & ? \\
-\hline
-Initial interior points & ? \\
-\hline
-\end{tabular}
-\caption{Generic data-flow problem table}
-\label{tab:dataflow_problem_x}
-\end{table}
-
-\clearpage
-
-% --- Reaching Definitions --- %
-\section{Reaching Definitions}
-
-The problem of reaching definitions consists in finding all the available definitions in a specific point of the program. The information obtained by solving this problem can be used to check whether a variable is used before its definition.
-
-\subsection{Problem formalization}
-
-Formally we say that a definition \textit{d} \textbf{reaches} a point \textit{p} if there is a path from \textit{d} to \textit{p} where \textit{d} is not killed along the path.
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|p{0.4\textwidth}|p{0.4\textwidth}|}
-\hline
- & \textbf{Reaching definitions problem} \\
-\hline
-Domain & Sets of definitions \\
-\hline
-Direction & Forward \\
- & $out[b] = f_b(in[b])$ \\
- & $in[b] = \wedge out[pred[b]]$ \\
-\hline
-Transfer function & $f_b(x) = Gen_b \cup (x - Kill_b)$ \\
-\hline
-Meet Operation ($\wedge$) & $\cup$ \\
-\hline
-Boundary Condition & $out[entry] = \varnothing$  \\
-\hline
-Initial interior points & $out[b] = \varnothing$  \\
-\hline
-\end{tabular}
-\caption{Reaching Definition table summary}
-\label{tab:dataflow_problem_x}
-\end{table}
-
-\subsection{Example}
-
-\begin{figure}[H]
-    \centering
-    \begin{minipage}{0.45\textwidth}
-        \includegraphics[width=\linewidth]{graphs/liveness_reaching.pdf}
-    \end{minipage}%%
-    \begin{minipage}{0.45\textwidth}
-        \textbf{Outputs:}
-        
-        $B1 = \{d1, d2, d3\}$
-        
-        $B2 = \{d3, d4, d5, d6\}$
-        
-        $B3 = \{d4, d5, d6\}$
-        
-        $B4 = \{d3, d5, d6, d7\}$
-
-        \textbf{Inputs:}
-        
-        $B1 = \{\}$
-        
-        $B2 = \{d1, d2, d3, d5, d6, d7\}$
-        
-        $B3 = \{d3, d4, d5, d6\}$
-        
-        $B4 = \{d3, d5, d6, d7\}$
-    \end{minipage}
-    \caption{Reaching definitions problem example}
-\end{figure}
-
-\section{Liveness Analysis}
-
-The problem of liveness analysis aims at finding which variables are \textit{alive} at a specific point of the program. It is primarily used to identify uninitialized variables throughtout the program or to optimally use the registers.
-
-\subsection{Problem formalization}
-
-Formally we say that a variable \textit{v} is \textbf{alive} at a point \textit{p} if the value of \textit{v} is used along some path from \textit{p} to the exit block, otherwise it is considered \textbf{dead}.
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|p{0.4\textwidth}|p{0.4\textwidth}|}
-\hline
- & \textbf{Liveness of variables} \\
-\hline
-Domain & Sets of variables \\
-\hline
-Direction & Backward \\
- & $in[b] = f_b(out[b]) $ \\
- & $out[b] = \wedge in[succ(b)]$ \\
-\hline
-Transfer function & $f_b(x) = Use_b \cup (x - Def_b)$ \\
-\hline
-Meet Operation ($\wedge$) & $\cup$ \\
-\hline
-Boundary Condition & $in[exit] = \varnothing$ \\
-\hline
-Initial interior points & $in[b] = \varnothing$ \\
-\hline
-\end{tabular}
-\caption{Liveness of variables summary table}
-\label{tab:liveness}
-\end{table}
-
-\subsection{Example}
-
-\begin{figure}[H]
-    \centering
-    \begin{minipage}{0.45\textwidth}
-        \includegraphics[width=\linewidth]{graphs/liveness_reaching.pdf}
-    \end{minipage}%%
-    \begin{minipage}{0.45\textwidth}
-        \textbf{Outputs:}
-        
-        $B1 = \{m, n, u1, u2, u3\}$
-        
-        $B2 = \{j, u2, u3\}$
-        
-        $B3 = \{j, u2, u3\}$
-        
-        $B4 = \{i, j , u2, u3\}$
-
-        \textbf{Inputs:}
-        
-        $B1 = \{m, n, u1, u2, u3\}$
-        
-        $B2 = \{i, j, u2, u3\}$
-        
-        $B3 = \{u2, u3\}$
-        
-        $B4 = \{u3\}$
-    \end{minipage}
-    \caption{Your new caption here}
-\end{figure}
-
-% --- Available Expressions --- %
-\section{Available Expressions}
-
-The data-flow problem of available expressions tries to find what are the expressions already computed in a certain point of the program. It is used in order to know if an expression that was computed previously can be reused or not and it is fundamental for Global Common Subexpression Elimination optimization.
-
-\subsection{Problem formalization}
-
-Formally, an expression is defined as \textbf{available} if it has been computed along every path from the entry block to the point \textit{p}. Moreover, we say that a block \textit{generates} an expression $x \oplus y$ if it evaluates the expression without subsequently redefining $x$ or $y$. Otherwise, we say that a block \textit{kills} an expression when it assign a new value either to $x$ or $y$ and do not recomputes the expression $x \oplus y$.
-
-\begin{table}[H]
-\centering
-\begin{tabular}{|p{0.4\textwidth}|p{0.4\textwidth}|}
-\hline
- & \textbf{Dataflow Problem X} \\
-\hline
-Domain & Sets of expressions \\
-\hline
-Direction & Forward \\
- & $out[b] = f_b(in[b])$ \\
- & $in[b] = \wedge out[pred(b)]$ \\
-\hline
-Transfer function & $f_b(x) = Gen_b \cup (x - Kill_b)$ \\
-\hline
-Meet Operation ($\wedge$) & $\cap$ \\
-\hline
-Boundary Condition & $out[entry] = \varnothing$ \\
-\hline
-Initial interior points & $out[b] = U$ \\
-\hline
-\end{tabular}
-\caption{Dataflow Problem X Properties}
-\label{tab:dataflow_problem_x}
-\end{table}
-
-\subsection{Example}
-
-\begin{figure}[H]
-    \centering
-    \begin{minipage}{0.45\textwidth}
-        \includegraphics[width=\linewidth]{graphs/available_expressions.pdf}
-    \end{minipage}%%
-    \begin{minipage}{0.45\textwidth}
-        \textbf{Outputs:}
-        
-        $B1 = \varnothing$
-        
-        $B2 = \{a-b\}$
-        
-        $B3 = \{a-b, a*b\}$
-        
-        $B4 = \{a-b\}$
-
-        $B5 = \varnothing$
-        
-        $B6 = \{a-b\}$
-        
-        $B7 = \{a-b, a*b\}$
-
-        \textbf{Inputs:}
-        
-        $B1 = \varnothing$
-        
-        $B2 = \varnothing$
-        
-        $B3 = \{a-b\}$
-        
-        $B4 = \{a-b, a*b\}$
-
-        $B5 = \{a-b, a*b\}$
-        
-        $B6 = \varnothing$
-        
-        $B7 = \{a-b, a*b\}$
-    \end{minipage}
-    \caption{Reaching definitions problem example}
-\end{figure}
-
-
 % --- Very Busy Expressions --- %
 \section{Very Busy Expressions}
 
@@ -359,55 +53,55 @@ The search for very busy expressions can be useful for code hoisting, since very
 Formally an expression is said to be \textbf{very busy} when it is computed along each path that part from the point \textit{p} without any redefinition of its operands. This information can be used to move the expression to a point of the code in which is computation can be used by all the paths that use the expression.
 
 \begin{table}[H]
-\centering
-\begin{tabular}{|p{0.4\textwidth}|p{0.4\textwidth}|}
-\hline
- & \textbf{Very Busy Expressions} \\
-\hline
-Domain & Sets of expressions \\
-\hline
-Direction & Backward \\
- & $in[b] = f_b(out[b])$ \\
- & $out[b] = \wedge in[succ(b)]$ \\
-\hline
-Transfer function & $f_b(x) = Gen_b \cup (x - Kill_b)$ \\
-\hline
-Meet Operation ($\wedge$) & $\cap$ \\
-\hline
-Boundary Condition & $out[exit] = \varnothing$ \\
-\hline
-Initial interior points & $out[b] = U$ \\
-\hline
-\end{tabular}
-\caption{Very busy expressions summary table}
-\label{tab:dataflow_problem_x}
+	\centering
+	\begin{tabular}{|p{0.4\textwidth}|p{0.4\textwidth}|}
+		\hline
+		                          & \textbf{Very Busy Expressions}     \\
+		\hline
+		Domain                    & Sets of expressions                \\
+		\hline
+		Direction                 & Backward                           \\
+		                          & $in[b] = f_b(out[b])$              \\
+		                          & $out[b] = \wedge in[succ(b)]$      \\
+		\hline
+		Transfer function         & $f_b(x) = Gen_b \cup (x - Kill_b)$ \\
+		\hline
+		Meet Operation ($\wedge$) & $\cap$                             \\
+		\hline
+		Boundary Condition        & $out[exit] = \varnothing$          \\
+		\hline
+		Initial interior points   & $out[b] = U$                       \\
+		\hline
+	\end{tabular}
+	\caption{Very busy expressions summary table}
+	\label{tab:dataflow_problem_x}
 \end{table}
 
 \subsection{Example}
 
 \begin{figure}[H]
-    \centering
-    \includegraphics[width=0.4\textwidth]{graphs/very_busy.pdf}
-    \caption{Very Busy Expression Example}
-    \label{fig:very-busy}
+	\centering
+	\includegraphics[width=0.4\textwidth]{graphs/very_busy.pdf}
+	\caption{Very Busy Expression Example}
+	\label{fig:very-busy}
 \end{figure}
 
 \begin{table}[H]
-\centering
-\begin{tabular}{|c|c|c|c|c|c|c|}
-\hline
-   & \multicolumn{2}{c|}{\textbf{Iteration 1}} & \multicolumn{2}{c|}{\textbf{Iteration 2}} & \multicolumn{2}{c|}{\textbf{Iteration 3}} \\ \hline
-   & \textbf{IN[B]}   & \textbf{OUT[B]}   & \textbf{IN[B]}   & \textbf{OUT[B]}   & \textbf{IN[B]}   & \textbf{OUT[B]}   \\ \hline
-    \textbf{BB1} & $\{b-a\}$ & $\{b-a\}$ & & & & \\ \hline
-    \textbf{BB2} & $\{b-a\}$ & $\{b-a\}$ & & & & \\ \hline
-    \textbf{BB3} & $\{b-a\}$ & $\{a-b\}$ & & & & \\ \hline
-    \textbf{BB4} & $\{a-b\}$ & $\varnothing$ & & & & \\ \hline
-    \textbf{BB5} & $\{b - a\}$ & $\varnothing$ & & & & \\ \hline
-    \textbf{BB6} & $\varnothing$ & $\{a-b\}$ & & & & \\ \hline
-    \textbf{BB7} & $\{a-b\}$ & $\varnothing$ & & & & \\ \hline
-    \textbf{BB8} & $\varnothing$ & $\varnothing$ & & & & \\ \hline
-\end{tabular}
-\caption{Very Busy Expression Algorithm Execution Table}
+	\centering
+	\begin{tabular}{|c|c|c|c|c|c|c|}
+		\hline
+		             & \multicolumn{2}{c|}{\textbf{Iteration 1}} & \multicolumn{2}{c|}{\textbf{Iteration 2}} & \multicolumn{2}{c|}{\textbf{Iteration 3}}                                                      \\ \hline
+		             & \textbf{IN[B]}                            & \textbf{OUT[B]}                           & \textbf{IN[B]}                            & \textbf{OUT[B]} & \textbf{IN[B]} & \textbf{OUT[B]} \\ \hline
+		\textbf{BB1} & $\{b-a\}$                                 & $\{b-a\}$                                 &                                           &                 &                &                 \\ \hline
+		\textbf{BB2} & $\{b-a\}$                                 & $\{b-a\}$                                 &                                           &                 &                &                 \\ \hline
+		\textbf{BB3} & $\{b-a\}$                                 & $\{a-b\}$                                 &                                           &                 &                &                 \\ \hline
+		\textbf{BB4} & $\{a-b\}$                                 & $\varnothing$                             &                                           &                 &                &                 \\ \hline
+		\textbf{BB5} & $\{b - a\}$                               & $\varnothing$                             &                                           &                 &                &                 \\ \hline
+		\textbf{BB6} & $\varnothing$                             & $\{a-b\}$                                 &                                           &                 &                &                 \\ \hline
+		\textbf{BB7} & $\{a-b\}$                                 & $\varnothing$                             &                                           &                 &                &                 \\ \hline
+		\textbf{BB8} & $\varnothing$                             & $\varnothing$                             &                                           &                 &                &                 \\ \hline
+	\end{tabular}
+	\caption{Very Busy Expression Algorithm Execution Table}
 \end{table}
 
 
@@ -421,51 +115,51 @@ Dominator analysis is fundamental to create the single static assignment form.
 A basic block $B_1$ \textbf{dominates} another block $B_2$ if it is encountered in every path from entry to $B_2$.
 
 \begin{table}[H]
-\centering
-\begin{tabular}{|p{0.4\textwidth}|p{0.45\textwidth}|}
-\hline
- & \textbf{Dominator Analysis} \\
-\hline
-Domain & Sets of Basic Blocks \\
-\hline
-Direction & Forward \\
-\hline
-Transfer function & $f_b(x) = \{x\} \cup (\bigcap_{m \in preds(x)} f_b(m)) $ \\
-\hline
-Meet Operation ($\wedge$) & $\cap$ \\
-\hline
-Boundary Condition & $Dom[entry] = \{entry\}$ \\
-\hline
-Initial interior points & $Dom[b] = N \quad \forall b \neq entry$, with $N$ the number of basic blocks of the CFG \\
-\hline
-\end{tabular}
-\caption{Dataflow Problem X Properties}
-\label{tab:dataflow_problem_x}
+	\centering
+	\begin{tabular}{|p{0.4\textwidth}|p{0.45\textwidth}|}
+		\hline
+		                          & \textbf{Dominator Analysis}                                                             \\
+		\hline
+		Domain                    & Sets of Basic Blocks                                                                    \\
+		\hline
+		Direction                 & Forward                                                                                 \\
+		\hline
+		Transfer function         & $f_b(x) = \{x\} \cup (\bigcap_{m \in preds(x)} f_b(m)) $                                \\
+		\hline
+		Meet Operation ($\wedge$) & $\cap$                                                                                  \\
+		\hline
+		Boundary Condition        & $Dom[entry] = \{entry\}$                                                                \\
+		\hline
+		Initial interior points   & $Dom[b] = N \quad \forall b \neq entry$, with $N$ the number of basic blocks of the CFG \\
+		\hline
+	\end{tabular}
+	\caption{Dataflow Problem X Properties}
+	\label{tab:dataflow_problem_x}
 \end{table}
 
 \subsection{Example}
 
 \begin{figure}[H]
-    \centering
-    \includegraphics[width=0.5\textwidth]{graphs/dominance.pdf}
-    \caption{Dominance Analysis example}
-    \label{fig:enter-label}
+	\centering
+	\includegraphics[width=0.5\textwidth]{graphs/dominance.pdf}
+	\caption{Dominance Analysis example}
+	\label{fig:enter-label}
 \end{figure}
 
 \begin{table}[H]
-\centering
-\begin{tabular}{|c|c|c|c|c|c|c|}
-\hline
-   & \textbf{DOM[B]} \\ \hline
-    \textbf{A} & $\{A\}$ \\ \hline
-    \textbf{B} & $\{A, B\}$ \\ \hline
-    \textbf{C} & $\{A, C\}$  \\ \hline
-    \textbf{D} &  $\{A, C, D\}$ \\ \hline
-    \textbf{E} & $\{A, C, E\}$ \\ \hline
-    \textbf{F} & $\{A, C, F\}$ \\ \hline
-    \textbf{G} & $\{A\}$ \\ \hline
-\end{tabular}
-\caption{Dominance analysis execution table}
+	\centering
+	\begin{tabular}{|c|c|c|c|c|c|c|}
+		\hline
+		           & \textbf{DOM[B]} \\ \hline
+		\textbf{A} & $\{A\}$         \\ \hline
+		\textbf{B} & $\{A, B\}$      \\ \hline
+		\textbf{C} & $\{A, C\}$      \\ \hline
+		\textbf{D} & $\{A, C, D\}$   \\ \hline
+		\textbf{E} & $\{A, C, E\}$   \\ \hline
+		\textbf{F} & $\{A, C, F\}$   \\ \hline
+		\textbf{G} & $\{A\}$         \\ \hline
+	\end{tabular}
+	\caption{Dominance analysis execution table}
 \end{table}
 
 % --- Constant Propagation --- %
@@ -475,90 +169,90 @@ The constant propagation problem aims at finding what are the couples $<variable
 
 \subsection{Problem formalization}
 
-We say that a couple $<variable, constant>$ is valid at block $n$ if it is guaranteed that the variable $x$ gets that constant value every time that the block is reached. 
+We say that a couple $<variable, constant>$ is valid at block $n$ if it is guaranteed that the variable $x$ gets that constant value every time that the block is reached.
 
 \begin{table}[H]
-\centering
-\begin{tabular}{|p{0.4\textwidth}|p{0.4\textwidth}|}
-\hline
- & \textbf{Constant Propagation} \\
-\hline
-Domain & Sets of variables and their constant values \\
-\hline
-Direction & Forward \\
- & $in[b] = \wedge(out[pred(b)])$ \\
- & $out[b] = f_b(in[b])$ \\
-\hline
-Transfer function & $f_b(x) = Gen_b \cup (x - Kill_b)$ \\
-\hline
-Meet Operation ($\wedge$) & $\cap$ \\
-\hline
-Boundary Condition & $out[entry] = \varnothing$ \\
-\hline
-Initial interior points & $out[b] = \varnothing$ \\
-\hline
-\end{tabular}
-\caption{Constant Propagation Problem Summary Table}
-\label{tab:dataflow_problem_x}
+	\centering
+	\begin{tabular}{|p{0.4\textwidth}|p{0.4\textwidth}|}
+		\hline
+		                          & \textbf{Constant Propagation}                            \\
+		\hline
+		Domain                    & Sets of variables and their constant values              \\
+		\hline
+		Direction                 & Forward                                                  \\
+		                          & $in[b] = \wedge(out[pred(b)])$                           \\
+		                          & $out[b] = f_b(in[b])$                                    \\
+		\hline
+		Transfer function         & $f_b(x) = Gen_b \cup (x - Kill_b)$                       \\
+		\hline
+		Meet Operation ($\wedge$) & $\cap$                                                   \\
+		\hline
+		Boundary Condition        & $out[entry] = \varnothing \quad in[entry] = \varnothing$ \\
+		\hline
+		Initial interior points   & $out[b] = \varnothing \quad in[b] = U$                   \\
+		\hline
+	\end{tabular}
+	\caption{Constant Propagation Problem Summary Table}
+	\label{tab:dataflow_problem_x}
 \end{table}
 
 \subsection{Example}
 
 \begin{figure}[H]
-    \centering
-    \includegraphics[width=0.45\textwidth]{graphs/constant_propagation.pdf}
-    \caption{Constant Propagation example}
-    \label{fig:enter-label}
+	\centering
+	\includegraphics[width=0.45\textwidth]{graphs/constant_propagation.pdf}
+	\caption{Constant Propagation example}
+	\label{fig:enter-label}
 \end{figure}
 
 \begin{table}[H]
-\centering
-\begin{tabular}{|c|c|c|c|c|c|c|}
-\hline
-   & \multicolumn{2}{c|}{\textbf{Iteration 1}}  \\ \hline
-   & \textbf{IN[B]}   & \textbf{OUT[B]}  \\ \hline
-    \textbf{BB1} & $\varnothing$ & $<k,2>$  \\ \hline
-    \textbf{BB2} & $\varnothing$ & $<k,2>$  \\ \hline
-    \textbf{BB3} & $<k,2>$ & $<k,2>$  \\ \hline
-    \textbf{BB4} & $<k,2>$ & $<k,2>, <a, 4>$  \\ \hline
-    \textbf{BB5} & $<k,2>$ & $<k,2>, <a, 4>$  \\ \hline
-    \textbf{BB6} & $<k,2>, <a, 4>$ & $<k,2>, <a, 4>, <x, 5>$ \\ \hline
-    \textbf{BB7} & $<k,2>, <a, 4>$ & $<k,2>, <a, 4>, <x, 8>$  \\ \hline
-    \textbf{BB8} &  $<k,2>, <a, 4>$ & $<k,4>, <a, 4>$   \\ \hline
-    \textbf{BB9} &  $<k,2>, <a, 4>$ & $<k,2>, <a, 4>$  \\ \hline
-    \textbf{BB10} &  $<k,4>, <a, 4>$ & $<k,2>, <a, 4>, <b,2>$   \\ \hline
-    \textbf{BB11} &  $<k,4>, <a, 4>, <b,2>$ & $<k,4>, <a, 4>, <b,2>, <x,8>$  \\ \hline
-    \textbf{BB12} & $<k,4>, <a, 4>, <b,2>, <x,8>$ & $<k,2>, <a, 4>, <b,2>, <x,8>, <y,8>$ \\ \hline
-    \textbf{BB13} &  $<k,4>, <a, 4>, <b,2>, <x,8>, <y,8>$   &  $<k,5>, <a, 4>, <b,2>, <x,8>, <y,8>$  \\ \hline
-    \textbf{BB14} &  $<k,4>, <a, 4>$ & $<k,4>, <a, 4>$  \\ \hline
-    \textbf{BB15} &  $<k,4>, <a, 4>$ & $<k,4>, <a, 4>$  \\ \hline
-\end{tabular}
-\caption{Very Busy Expression Algorithm Execution Table}
+	\centering
+	\begin{tabular}{|c|c|c|c|c|c|c|}
+		\hline
+		              & \multicolumn{2}{c|}{\textbf{Iteration 1}}                                 \\ \hline
+		              & \textbf{IN[B]}                            & \textbf{OUT[B]}               \\ \hline
+		\textbf{BB1}  & $\varnothing$                             & $<k,2>$                       \\ \hline
+		\textbf{BB2}  & $\varnothing$                             & $<k,2>$                       \\ \hline
+		\textbf{BB3}  & $<k,2>$                                   & $<k,2>$                       \\ \hline
+		\textbf{BB4}  & $<k,2>$                                   & $<k,2>, <a, 4>$               \\ \hline
+		\textbf{BB5}  & $<k,2>$                                   & $<k,2>, <a, 4>$               \\ \hline
+		\textbf{BB6}  & $<k,2>, <a, 4>$                           & $<k,2>, <a, 4>, <x, 5>$       \\ \hline
+		\textbf{BB7}  & $<k,2>, <a, 4>$                           & $<k,2>, <a, 4>, <x, 8>$       \\ \hline
+		\textbf{BB8}  & $<k,2>, <a, 4>$                           & $<k,4>, <a, 4>$               \\ \hline
+		\textbf{BB9}  & $<k,2>, <a, 4>$                           & $<k,2>, <a, 4>$               \\ \hline
+		\textbf{BB10} & $<k,4>, <a, 4>$                           & $<k,2>, <a, 4>, <b,2>$        \\ \hline
+		\textbf{BB11} & $<k,4>, <a, 4>, <b,2>$                    & $<k,4>, <a, 4>, <b,2>, <x,8>$ \\ \hline
+		\textbf{BB12} & \makecell{$<k,4>, <a, 4>,$                                                \\ $<b,2>, <x,8>$}             & \makecell{$<k,2>, <a, 4>,$ \\ $<b,2>, <x,8>, <y,8>$} \\ \hline
+		\textbf{BB13} & \makecell{$<k,4>, <a, 4>,$                                                \\  $<b,2>, <x,8>, <y,8>$}       & \makecell{$<k,5>, <a, 4>,$ \\ $<b,2>, <x,8>, <y,8>$} \\ \hline
+		\textbf{BB14} & $<k,4>, <a, 4>$                           & $<k,4>, <a, 4>$               \\ \hline
+		\textbf{BB15} & $<k,4>, <a, 4>$                           & $<k,4>, <a, 4>$               \\ \hline
+	\end{tabular}
+	\caption{Constant Propagation Algorithm Execution Table (Iteration 1)}
 \end{table}
 
 \begin{table}[H]
-\centering
-\begin{tabular}{|c|c|c|c|c|c|c|}
-\hline
-   & \multicolumn{2}{c|}{\textbf{Iteration 1}}  \\ \hline
-   & \textbf{IN[B]}   & \textbf{OUT[B]}  \\ \hline
-    \textbf{BB1} & $\varnothing$ & $<k,2>$  \\ \hline
-    \textbf{BB2} & $\varnothing$ & $<k,2>$  \\ \hline
-    \textbf{BB3} & $<k,2>$ & $<k,2>$  \\ \hline
-    \textbf{BB4} & $<k,2>$ & $<k,2>, <a, 4>$  \\ \hline
-    \textbf{BB5} & $<k,2>$ & $<k,2>, <a, 4>$  \\ \hline
-    \textbf{BB6} & $<k,2>, <a, 4>$ & $<k,2>, <a, 4>, <x, 5>$ \\ \hline
-    \textbf{BB7} & $<k,2>, <a, 4>$ & $<k,2>, <a, 4>, <x, 8>$  \\ \hline
-    \textbf{BB8} &  $<k,2>, <a, 4>$ & $<k,4>, <a, 4>$   \\ \hline
-    \textbf{BB9} &  $<a, 4>$ & $<a, 4>$  \\ \hline
-    \textbf{BB10} & $ <a, 4>$ & $<a, 4>, <b,2>$   \\ \hline
-    \textbf{BB11} &  $ <a, 4>, <b,2>$ & $<k,8>, <a, 4>, <b,2>$  \\ \hline
-    \textbf{BB12} & $<a, 4>, <b,2>$ & $<a, 4>, <b,2>, <y,8>$ \\ \hline
-    \textbf{BB13} &  $<a, 4>, <b,2>, <y,8>$   &  $<k,5>, <a, 4>, <b,2>, <y,8>$  \\ \hline
-    \textbf{BB14} &  $ <a, 4>$ & $<a, 4>$  \\ \hline
-    \textbf{BB15} &  $ <a, 4>$ & $<a, 4>$  \\ \hline
-\end{tabular}
-\caption{Very Busy Expression Algorithm Execution Table}
+	\centering
+	\begin{tabular}{|c|c|c|c|c|c|c|}
+		\hline
+		              & \multicolumn{2}{c|}{\textbf{Iteration 2}}                                 \\ \hline
+		              & \textbf{IN[B]}                            & \textbf{OUT[B]}               \\ \hline
+		\textbf{BB1}  & $\varnothing$                             & $<k,2>$                       \\ \hline
+		\textbf{BB2}  & $\varnothing$                             & $<k,2>$                       \\ \hline
+		\textbf{BB3}  & $<k,2>$                                   & $<k,2>$                       \\ \hline
+		\textbf{BB4}  & $<k,2>$                                   & $<k,2>, <a, 4>$               \\ \hline
+		\textbf{BB5}  & $<k,2>$                                   & $<k,2>, <a, 4>$               \\ \hline
+		\textbf{BB6}  & $<k,2>, <a, 4>$                           & $<k,2>, <a, 4>, <x, 5>$       \\ \hline
+		\textbf{BB7}  & $<k,2>, <a, 4>$                           & $<k,2>, <a, 4>, <x, 8>$       \\ \hline
+		\textbf{BB8}  & $<k,2>, <a, 4>$                           & $<k,4>, <a, 4>$               \\ \hline
+		\textbf{BB9}  & $<a, 4>$                                  & $<a, 4>$                      \\ \hline
+		\textbf{BB10} & $ <a, 4>$                                 & $<a, 4>, <b,2>$               \\ \hline
+		\textbf{BB11} & $ <a, 4>, <b,2>$                          & $<k,8>, <a, 4>, <b,2>$        \\ \hline
+		\textbf{BB12} & $<a, 4>, <b,2>$                           & $<a, 4>, <b,2>, <y,8>$        \\ \hline
+		\textbf{BB13} & $<a, 4>, <b,2>, <y,8>$                    & $<k,5>, <a, 4>, <b,2>, <y,8>$ \\ \hline
+		\textbf{BB14} & $ <a, 4>$                                 & $<a, 4>$                      \\ \hline
+		\textbf{BB15} & $ <a, 4>$                                 & $<a, 4>$                      \\ \hline
+	\end{tabular}
+	\caption{Constant Propagation Algorithm Execution Table (Iteration 2)}
 \end{table}
 
 \end{document}
