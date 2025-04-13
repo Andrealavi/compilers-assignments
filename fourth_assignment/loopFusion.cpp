@@ -1,7 +1,20 @@
+/**
+ * @file loopFusion.cpp
+ * @brief Implementation of loop fusion optimization pass for LLVM
+ *
+ * This file contains functions to analyze and transform loops for fusion.
+ * Loop fusion combines adjacent loops with equivalent iteration spaces
+ * into a single loop to improve performance through better locality
+ * and reduced loop overhead.
+ */
+
 #include "loopFusion.hpp"
 
 using namespace llvm;
 
+/**
+ * Command line option to enable verbose debug output for the loop fusion pass
+ */
 static cl::opt<bool> LoopFusionVerbose(
     "lf-verbose",
     cl::desc(
@@ -10,10 +23,30 @@ static cl::opt<bool> LoopFusionVerbose(
     cl::init(false)
 );
 
+/**
+ * @brief Get the block to check for adjacency (guard block or preheader)
+ *
+ * For guarded loops, returns the guard branch block, otherwise returns
+ * the loop preheader block.
+ *
+ * @param L The loop to analyze
+ * @return BasicBlock* The block to check for adjacency
+ */
 BasicBlock* getBlockToCheck(Loop &L) {
     return L.isGuarded() ? L.getLoopGuardBranch()->getParent() : L.getLoopPreheader() ;
 }
 
+/**
+ * @brief Determine if two loops are adjacent in the control flow graph
+ *
+ * Checks if the exit block of the first loop is the entry block of the second loop.
+ * This is a necessary condition for loop fusion.
+ *
+ * @param L1 First loop
+ * @param L2 Second loop
+ * @return true If the loops are adjacent
+ * @return false Otherwise
+ */
 bool areAdjacents(Loop &L1, Loop &L2) {
     BasicBlock *L2Entry = getBlockToCheck(L2);
     BasicBlock *L1Exit = nullptr;
@@ -42,6 +75,20 @@ bool areAdjacents(Loop &L1, Loop &L2) {
     return L2Entry == L1Exit;
 }
 
+/**
+ * @brief Check for control flow equivalence between loops
+ *
+ * Two loops are control flow equivalent if the first loop's header dominates
+ * the second loop's header, and the second loop's header post-dominates the
+ * first loop's header. This ensures proper nesting relationship.
+ *
+ * @param L1 First loop
+ * @param L2 Second loop
+ * @param DT Dominator tree analysis
+ * @param PDT Post-dominator tree analysis
+ * @return true If the loops are control flow equivalent
+ * @return false Otherwise
+ */
 bool areCFE(Loop &L1, Loop &L2, DominatorTree &DT, PostDominatorTree &PDT) {
     bool result = DT.dominates(L1.getHeader(), L2.getHeader()) &&
         PDT.dominates(L2.getHeader(), L1.getHeader());
@@ -58,6 +105,25 @@ bool areCFE(Loop &L1, Loop &L2, DominatorTree &DT, PostDominatorTree &PDT) {
     return result;
 }
 
+/**
+ * @brief Check if two loops have the same iteration count
+ *
+ * Uses ScalarEvolution to determine if the loops execute the same number of iterations.
+ * This is a requirement for fusion, as loops with different iteration counts
+ * cannot be directly combined.
+ *
+ * @note The trip count could be reported as 0 if the ScalarEvolution analysis
+ * cannot recognize the start and end values of the loop. This commonly happens
+ * when the loop doesn't use traditional PHI nodes for induction variables but
+ * instead uses loads and stores. In such cases, the function will return false
+ * even though the loops might actually have the same iteration count.
+ *
+ * @param L1 First loop
+ * @param L2 Second loop
+ * @param SE Scalar evolution analysis
+ * @return true If both loops have matching non-zero iteration counts
+ * @return false Otherwise
+ */
 bool haveSameItNum(Loop &L1, Loop &L2, ScalarEvolution &SE) {
     unsigned L1TripCount = SE.getSmallConstantTripCount(&L1);
     unsigned L2TripCount = SE.getSmallConstantTripCount(&L2);
@@ -73,6 +139,18 @@ bool haveSameItNum(Loop &L1, Loop &L2, ScalarEvolution &SE) {
     return result;
 }
 
+/**
+ * @brief Check if a load instruction depends on any of the store instructions
+ *
+ * Uses DependenceInfo to determine if there's a dependence between the load
+ * and any of the stores, which would prevent fusion.
+ *
+ * @param inst Load instruction to check
+ * @param storeInsts Vector of store instructions to check against
+ * @param DI Dependence information analysis
+ * @return true If a dependence is found
+ * @return false Otherwise
+ */
 bool isDependent(LoadInst &inst, std::vector<StoreInst*> storeInsts, DependenceInfo &DI) {
     for (StoreInst *storeInst : storeInsts) {
         if (DI.depends(&inst, storeInst, true)) {
@@ -91,6 +169,12 @@ bool isDependent(LoadInst &inst, std::vector<StoreInst*> storeInsts, DependenceI
     return false;
 }
 
+/**
+ * @brief Collect all store instructions from a loop
+ *
+ * @param L Loop to analyze
+ * @return std::vector<StoreInst*> Vector of store instructions in the loop
+ */
 std::vector<StoreInst*> getLoopStores(Loop &L) {
     std::vector<StoreInst*> loopStores;
 
@@ -111,6 +195,18 @@ std::vector<StoreInst*> getLoopStores(Loop &L) {
    return loopStores;
 }
 
+/**
+ * @brief Check for loop-carried dependencies between two loops
+ *
+ * Determines if there are any data dependencies from the first loop to the second
+ * that would prevent fusion.
+ *
+ * @param L1 First loop
+ * @param L2 Second loop
+ * @param DI Dependence information analysis
+ * @return true If there are dependencies preventing fusion
+ * @return false Otherwise
+ */
 bool areDependent(Loop &L1, Loop &L2, DependenceInfo &DI) {
     if (LoopFusionVerbose) {
         errs() << "Checking for dependencies between loops...\n";
@@ -138,6 +234,24 @@ bool areDependent(Loop &L1, Loop &L2, DependenceInfo &DI) {
     return false;
 }
 
+/**
+ * @brief Check if loop fusion is applicable between two loops
+ *
+ * Performs all the necessary checks to determine if two loops can be fused:
+ * - Loops must be adjacent
+ * - Loops must be control flow equivalent
+ * - Loops must have the same trip count
+ * - No loop-carried dependencies between loops
+ *
+ * @param L1 First loop
+ * @param L2 Second loop
+ * @param SE Scalar evolution analysis
+ * @param DT Dominator tree analysis
+ * @param PDT Post-dominator tree analysis
+ * @param DI Dependence information analysis
+ * @return true If fusion can be applied
+ * @return false Otherwise
+ */
 bool isLoopFusionApplicable(Loop &L1, Loop &L2, ScalarEvolution &SE,
     DominatorTree &DT, PostDominatorTree &PDT, DependenceInfo &DI) {
         if (LoopFusionVerbose) {
@@ -179,6 +293,12 @@ bool isLoopFusionApplicable(Loop &L1, Loop &L2, ScalarEvolution &SE,
         return true;
 }
 
+/**
+ * @brief Get the first body block of a loop after the header
+ *
+ * @param L Loop to analyze
+ * @return BasicBlock* First body block or nullptr if not found
+ */
 BasicBlock *getFirstBodyBlock(Loop &L) {
     BasicBlock *BB = L.getHeader();
 
@@ -189,6 +309,12 @@ BasicBlock *getFirstBodyBlock(Loop &L) {
     return nullptr;
 }
 
+/**
+ * @brief Get the last body block of a loop before the latch
+ *
+ * @param L Loop to analyze
+ * @return BasicBlock* Last body block or nullptr if not found
+ */
 BasicBlock *getLastBodyBlock(Loop &L) {
     BasicBlock *BB = L.getLoopLatch();
 
@@ -199,6 +325,15 @@ BasicBlock *getLastBodyBlock(Loop &L) {
     return nullptr;
 }
 
+/**
+ * @brief Find the induction variable PHI node in a loop header
+ *
+ * Searches for a PHI node that is used in a comparison that controls the loop's
+ * branch instruction.
+ *
+ * @param L Loop to analyze
+ * @return PHINode* Induction variable or nullptr if not found
+ */
 PHINode* getInductionVariable(Loop &L) {
     BasicBlock *header = L.getHeader();
 
@@ -219,10 +354,24 @@ PHINode* getInductionVariable(Loop &L) {
     return nullptr;
 }
 
+/**
+ * @brief Check if a loop has a preheader block
+ *
+ * @param L Loop to check
+ * @return true If the loop has a preheader
+ * @return false Otherwise
+ */
 bool hasPreheader(Loop &L) {
     return L.getLoopPreheader() != nullptr;
 }
 
+/**
+ * @brief Remove an unused compare instruction and its associated load instruction
+ *
+ * Called during loop fusion cleanup to remove redundant instructions.
+ *
+ * @param inst Compare instruction to remove
+ */
 void removeCompareAndLoad(CmpInst *inst) {
     if (inst->hasNUses(0)) {
         if (LoopFusionVerbose) {
@@ -244,6 +393,16 @@ void removeCompareAndLoad(CmpInst *inst) {
     }
 }
 
+/**
+ * @brief Fuse two loop headers into a single header
+ *
+ * Moves instructions from the second loop header to the first loop header
+ * and updates branch instructions and successors.
+ *
+ * @param l1Header Header of the first loop
+ * @param l2Header Header of the second loop
+ * @param l1First First body block of the first loop
+ */
 void fuseHeader(BasicBlock *l1Header, BasicBlock *l2Header, BasicBlock *l1First) {
     if (LoopFusionVerbose) {
         errs() << "Fusing headers:\n";
@@ -311,6 +470,18 @@ void fuseHeader(BasicBlock *l1Header, BasicBlock *l2Header, BasicBlock *l1First)
     l2Header->eraseFromParent();
 }
 
+/**
+ * @brief Apply loop fusion transformation to merge two loops
+ *
+ * Performs the actual transformation to fuse two loops, including:
+ * - Replacing induction variables
+ * - Redirecting control flow
+ * - Merging headers
+ * - Connecting loop bodies
+ *
+ * @param L1 First loop
+ * @param L2 Second loop
+ */
 void applyLoopFusion(Loop &L1, Loop &L2) {
     if (LoopFusionVerbose) {
         errs() << "\n===== Applying loop fusion =====\n";
@@ -379,6 +550,19 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
     }
 }
 
+/**
+ * @brief Update loop analysis information after fusion
+ *
+ * Refreshes all the analysis results for a function after loop transformations.
+ *
+ * @param F Function to update
+ * @param AM Analysis manager
+ * @param DT Dominator tree analysis (output)
+ * @param PDT Post-dominator tree analysis (output)
+ * @param SE Scalar evolution analysis (output)
+ * @param DI Dependence information analysis (output)
+ * @param LI Loop information analysis (output)
+ */
 void updateLoopInfo(Function &F, FunctionAnalysisManager &AM, DominatorTree *&DT,
     PostDominatorTree *&PDT, ScalarEvolution *&SE, DependenceInfo *&DI, LoopInfo *&LI) {
         if (LoopFusionVerbose) {
@@ -391,6 +575,17 @@ void updateLoopInfo(Function &F, FunctionAnalysisManager &AM, DominatorTree *&DT
         LI = &AM.getResult<LoopAnalysis>(F);
 }
 
+/**
+ * @brief Main loop fusion pass implementation
+ *
+ * Iteratively applies loop fusion to eligible loop pairs in a function.
+ * After each fusion, analysis information is updated and another fusion
+ * attempt is made until no more fusions are possible.
+ *
+ * @param F Function to optimize
+ * @param AM Function analysis manager
+ * @return PreservedAnalyses Analysis preservation info (none preserved)
+ */
 PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
     if (LoopFusionVerbose) {
         errs() << "Running LoopFusion pass on function: " << F.getName() << "\n";
@@ -466,6 +661,14 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
     return PreservedAnalyses::none();
 }
 
+/**
+ * @brief Get plugin registration information for the loop fusion pass
+ *
+ * Creates registration info that allows the pass to be loaded by LLVM
+ * when specified through command line options.
+ *
+ * @return PassPluginLibraryInfo Registration information
+ */
 PassPluginLibraryInfo getLoopFusionPluginInfo() {
     return {LLVM_PLUGIN_API_VERSION, "LoopFusion", LLVM_VERSION_STRING,
         [](PassBuilder &PB) {
@@ -473,7 +676,7 @@ PassPluginLibraryInfo getLoopFusionPluginInfo() {
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, FunctionPassManager &FPM,
                    ArrayRef<PassBuilder::PipelineElement>) -> bool {
-                    // Allow the pass to be invoked via -passes=local-opts
+                    // Allow the pass to be invoked via -passes=lf
                     if (Name == "lf") {
                         FPM.addPass(LoopSimplifyPass());
                         FPM.addPass(LoopFusion());
@@ -486,7 +689,7 @@ PassPluginLibraryInfo getLoopFusionPluginInfo() {
 
 /**
  * Plugin API entry point - allows opt to recognize the pass
- * when used with -passes=local-opts command line option.
+ * when used with -passes=lf command line option.
  *
  * This is called by LLVM when loading the pass to get information
  * about it and register it in the pass pipeline.

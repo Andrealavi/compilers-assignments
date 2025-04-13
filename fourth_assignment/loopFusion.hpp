@@ -1,3 +1,12 @@
+/**
+ * @file loopFusion.hpp
+ * @brief Header for the loop fusion optimization pass
+ *
+ * Defines the LoopFusion class, a pass that analyzes and combines adjacent loops
+ * with the same iteration space to improve performance. Loop fusion typically
+ * improves cache locality and reduces loop overhead.
+ */
+
 #ifndef LLVM_TRANSFORMS_TESTPASS_H
 #define LLVM_TRANSFORMS_TESTPASS_H
 
@@ -19,10 +28,31 @@
 #include <map>
 
 namespace llvm {
+    /**
+     * @class LoopFusion
+     * @brief LLVM optimization pass that fuses adjacent compatible loops
+     *
+     * This optimization pass identifies and combines loops that:
+     * - Are adjacent in the control flow graph
+     * - Have the same trip count (number of iterations)
+     * - Are control flow equivalent
+     * - Don't have loop-carried dependencies between them
+     */
     class LoopFusion : public PassInfoMixin<LoopFusion> {
         public:
+            /**
+             * @brief Run loop fusion optimization on a function
+             *
+             * Analyzes the function for fusion opportunities and applies
+             * transformations where possible. Loops are fused iteratively
+             * until no more opportunities are found.
+             *
+             * @param F Function to optimize
+             * @param AM Function analysis manager
+             * @return PreservedAnalyses Analysis preservation info
+             */
             PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
     };
 } // namespace llvm
 
-#endif // LLVM_TRANSFORMS_TESTPASS _H
+#endif // LLVM_TRANSFORMS_TESTPASS_H
