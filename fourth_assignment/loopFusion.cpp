@@ -2,6 +2,14 @@
 
 using namespace llvm;
 
+static cl::opt<bool> LoopFusionVerbose(
+    "lf-verbose",
+    cl::desc(
+        "Enables verbose output for loop fusion optimization"
+    ),
+    cl::init(false)
+);
+
 BasicBlock* getBlockToCheck(Loop &L) {
     return L.isGuarded() ? L.getLoopGuardBranch()->getParent() : L.getLoopPreheader() ;
 }
@@ -16,21 +24,68 @@ bool areAdjacents(Loop &L1, Loop &L2) {
         L1Exit = L1.getExitBlock();
     }
 
+    if (LoopFusionVerbose) {
+        errs() << "Checking if loops are adjacent:\n";
+        errs() << "  L1 exit block: ";
+        if (L1Exit)
+            L1Exit->printAsOperand(errs(), false);
+        else
+            errs() << "nullptr";
+        errs() << "\n  L2 entry block: ";
+        if (L2Entry)
+            L2Entry->printAsOperand(errs(), false);
+        else
+            errs() << "nullptr";
+        errs() << "\n  Adjacent: " << (L2Entry == L1Exit ? "Yes" : "No") << "\n";
+    }
+
     return L2Entry == L1Exit;
 }
 
 bool areCFE(Loop &L1, Loop &L2, DominatorTree &DT, PostDominatorTree &PDT) {
-    return DT.dominates(L1.getHeader(), L2.getHeader()) &&
+    bool result = DT.dominates(L1.getHeader(), L2.getHeader()) &&
         PDT.dominates(L2.getHeader(), L1.getHeader());
+
+    if (LoopFusionVerbose) {
+        errs() << "Checking control flow equivalence:\n";
+        errs() << "  L1 header dominates L2 header: "
+               << (DT.dominates(L1.getHeader(), L2.getHeader()) ? "Yes" : "No") << "\n";
+        errs() << "  L2 header post-dominates L1 header: "
+               << (PDT.dominates(L2.getHeader(), L1.getHeader()) ? "Yes" : "No") << "\n";
+        errs() << "  CFE result: " << (result ? "Yes" : "No") << "\n";
+    }
+
+    return result;
 }
 
 bool haveSameItNum(Loop &L1, Loop &L2, ScalarEvolution &SE) {
-    return SE.getSmallConstantTripCount(&L1) == SE.getSmallConstantTripCount(&L2) != 0;
+    unsigned L1TripCount = SE.getSmallConstantTripCount(&L1);
+    unsigned L2TripCount = SE.getSmallConstantTripCount(&L2);
+    bool result = (L1TripCount == L2TripCount) && (L1TripCount != 0);
+
+    if (LoopFusionVerbose) {
+        errs() << "Checking trip counts:\n";
+        errs() << "  L1 trip count: " << L1TripCount << "\n";
+        errs() << "  L2 trip count: " << L2TripCount << "\n";
+        errs() << "  Same trip count: " << (result ? "Yes" : "No") << "\n";
+    }
+
+    return result;
 }
 
 bool isDependent(LoadInst &inst, std::vector<StoreInst*> storeInsts, DependenceInfo &DI) {
     for (StoreInst *storeInst : storeInsts) {
-        if (DI.depends(&inst, storeInst, true)) return true;
+        if (DI.depends(&inst, storeInst, true)) {
+            if (LoopFusionVerbose) {
+                errs() << "  Found dependency between:\n";
+                errs() << "    Load: ";
+                inst.print(errs());
+                errs() << "\n    Store: ";
+                storeInst->print(errs());
+                errs() << "\n";
+            }
+            return true;
+        }
     }
 
     return false;
@@ -49,18 +104,35 @@ std::vector<StoreInst*> getLoopStores(Loop &L) {
         }
     }
 
+    if (LoopFusionVerbose) {
+        errs() << "Collected " << loopStores.size() << " store instructions from loop\n";
+    }
+
    return loopStores;
 }
 
 bool areDependent(Loop &L1, Loop &L2, DependenceInfo &DI) {
+    if (LoopFusionVerbose) {
+        errs() << "Checking for dependencies between loops...\n";
+    }
+
     std::vector<StoreInst*> l1Stores = getLoopStores(L1);
 
     for (BasicBlock *BB : L2.getBlocks()) {
         for (Instruction &inst : *BB) {
             if (LoadInst *LI = dyn_cast<LoadInst>(&inst)) {
-                if (isDependent(*LI, l1Stores, DI)) return true;
+                if (isDependent(*LI, l1Stores, DI)) {
+                    if (LoopFusionVerbose) {
+                        errs() << "Loop dependency found - fusion not possible\n";
+                    }
+                    return true;
+                }
             }
         }
+    }
+
+    if (LoopFusionVerbose) {
+        errs() << "No loop dependencies found\n";
     }
 
     return false;
@@ -68,13 +140,42 @@ bool areDependent(Loop &L1, Loop &L2, DependenceInfo &DI) {
 
 bool isLoopFusionApplicable(Loop &L1, Loop &L2, ScalarEvolution &SE,
     DominatorTree &DT, PostDominatorTree &PDT, DependenceInfo &DI) {
-        if (
-            !areAdjacents(L1, L2) ||
-            !areCFE(L1, L2, DT, PDT) ||
-            !haveSameItNum(L1, L2, SE) ||
-            areDependent(L1, L2, DI)
-        ) return false;
+        if (LoopFusionVerbose) {
+            errs() << "\n===== Checking if loop fusion is applicable =====\n";
+            errs() << "Loop 1 header: ";
+            L1.getHeader()->printAsOperand(errs(), false);
+            errs() << "\nLoop 2 header: ";
+            L2.getHeader()->printAsOperand(errs(), false);
+            errs() << "\n";
+        }
 
+        bool adjacent = areAdjacents(L1, L2);
+        if (!adjacent) {
+            if (LoopFusionVerbose) errs() << "Loops are not adjacent - fusion not possible\n";
+            return false;
+        }
+
+        bool cfe = areCFE(L1, L2, DT, PDT);
+        if (!cfe) {
+            if (LoopFusionVerbose) errs() << "Loops are not control flow equivalent - fusion not possible\n";
+            return false;
+        }
+
+        bool sameIter = haveSameItNum(L1, L2, SE);
+        if (!sameIter) {
+            if (LoopFusionVerbose) errs() << "Loops don't have same iteration count - fusion not possible\n";
+            return false;
+        }
+
+        bool dependent = areDependent(L1, L2, DI);
+        if (dependent) {
+            if (LoopFusionVerbose) errs() << "Loops have dependencies - fusion not possible\n";
+            return false;
+        }
+
+        if (LoopFusionVerbose) {
+            errs() << "All checks passed - loop fusion is applicable!\n";
+        }
         return true;
 }
 
@@ -124,8 +225,18 @@ bool hasPreheader(Loop &L) {
 
 void removeCompareAndLoad(CmpInst *inst) {
     if (inst->hasNUses(0)) {
-        inst->print(outs());
+        if (LoopFusionVerbose) {
+            errs() << "Removing unused compare instruction: ";
+            inst->print(errs());
+            errs() << "\n";
+        }
+
         if (LoadInst *LI = dyn_cast<LoadInst>(inst->getOperand(0))) {
+            if (LoopFusionVerbose) {
+                errs() << "Removing associated load instruction: ";
+                LI->print(errs());
+                errs() << "\n";
+            }
             LI->eraseFromParent();
         }
 
@@ -134,6 +245,17 @@ void removeCompareAndLoad(CmpInst *inst) {
 }
 
 void fuseHeader(BasicBlock *l1Header, BasicBlock *l2Header, BasicBlock *l1First) {
+    if (LoopFusionVerbose) {
+        errs() << "Fusing headers:\n";
+        errs() << "  L1 header: ";
+        l1Header->printAsOperand(errs(), false);
+        errs() << "\n  L2 header: ";
+        l2Header->printAsOperand(errs(), false);
+        errs() << "\n  L1 first body block: ";
+        l1First->printAsOperand(errs(), false);
+        errs() << "\n";
+    }
+
     Instruction *l1termInst = l1Header->getTerminator();
     Instruction *l2termInst = l2Header->getTerminator();
 
@@ -143,10 +265,26 @@ void fuseHeader(BasicBlock *l1Header, BasicBlock *l2Header, BasicBlock *l1First)
         if (&inst != l2termInst) instsToMove.push_back(&inst);
     }
 
+    if (LoopFusionVerbose) {
+        errs() << "Moving " << instsToMove.size() << " instructions from L2 header to L1 header\n";
+    }
+
     for (Instruction *inst : instsToMove) {
         if (PHINode *PN = dyn_cast<PHINode>(inst)) {
-            if (!PN->hasNUses(0)) PN->moveBefore(l1Header->getFirstNonPHI());
+            if (!PN->hasNUses(0)) {
+                if (LoopFusionVerbose) {
+                    errs() << "  Moving PHI node: ";
+                    PN->print(errs());
+                    errs() << "\n";
+                }
+                PN->moveBefore(l1Header->getFirstNonPHI());
+            }
         } else if (inst != l2termInst) {
+            if (LoopFusionVerbose) {
+                errs() << "  Moving instruction: ";
+                inst->print(errs());
+                errs() << "\n";
+            }
             inst->moveBefore(l1termInst);
         }
     }
@@ -161,12 +299,28 @@ void fuseHeader(BasicBlock *l1Header, BasicBlock *l2Header, BasicBlock *l1First)
         if (BB->hasNPredecessors(0)) bbToErase.push_back(BB);
     }
 
+    if (LoopFusionVerbose && !bbToErase.empty()) {
+        errs() << "Removing " << bbToErase.size() << " unreachable predecessor blocks\n";
+    }
+
     for (BasicBlock *BB : bbToErase) BB->eraseFromParent();
 
+    if (LoopFusionVerbose) {
+        errs() << "Erasing L2 header\n";
+    }
     l2Header->eraseFromParent();
 }
 
 void applyLoopFusion(Loop &L1, Loop &L2) {
+    if (LoopFusionVerbose) {
+        errs() << "\n===== Applying loop fusion =====\n";
+        errs() << "L1 header: ";
+        L1.getHeader()->printAsOperand(errs(), false);
+        errs() << "\nL2 header: ";
+        L2.getHeader()->printAsOperand(errs(), false);
+        errs() << "\n";
+    }
+
     BasicBlock *l1First = getFirstBodyBlock(L1);
     BasicBlock *l1Last = getLastBodyBlock(L1);
 
@@ -186,8 +340,21 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
         PHINode *l1InductionVar = getInductionVariable(L1);
 
         if (l1InductionVar) {
+            if (LoopFusionVerbose) {
+                errs() << "Replacing L2 induction variable with L1 induction variable\n";
+                errs() << "  L1 IV: ";
+                l1InductionVar->print(errs());
+                errs() << "\n  L2 IV: ";
+                inductionVariable->print(errs());
+                errs() << "\n";
+            }
             inductionVariable->replaceAllUsesWith(l1InductionVar);
         }
+    }
+
+    if (LoopFusionVerbose) {
+        errs() << "Replacing L2 preheader with L1 preheader\n";
+        errs() << "Replacing L2 latch with L1 latch\n";
     }
 
     L2.getLoopPreheader()->replaceAllUsesWith(L1.getLoopPreheader());
@@ -195,15 +362,28 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
 
     fuseHeader(l1Header, l2Header, l1First);
 
+    if (LoopFusionVerbose) {
+        errs() << "Connecting L1 last block to L2 first block\n";
+    }
     inst = BranchInst::Create(l2First, l1Last->getTerminator());
     l1Last->getTerminator()->eraseFromParent();
 
+    if (LoopFusionVerbose) {
+        errs() << "Connecting L2 last block to L1 latch\n";
+    }
     inst = BranchInst::Create(L1.getLoopLatch(), l2Last->getTerminator());
     l2Last->getTerminator()->eraseFromParent();
+
+    if (LoopFusionVerbose) {
+        errs() << "Loop fusion completed successfully\n";
+    }
 }
 
 void updateLoopInfo(Function &F, FunctionAnalysisManager &AM, DominatorTree *&DT,
     PostDominatorTree *&PDT, ScalarEvolution *&SE, DependenceInfo *&DI, LoopInfo *&LI) {
+        if (LoopFusionVerbose) {
+            errs() << "Updating loop analysis information\n";
+        }
         DT = &AM.getResult<DominatorTreeAnalysis>(F);
         PDT = &AM.getResult<PostDominatorTreeAnalysis>(F);
         SE = &AM.getResult<ScalarEvolutionAnalysis>(F);
@@ -212,6 +392,10 @@ void updateLoopInfo(Function &F, FunctionAnalysisManager &AM, DominatorTree *&DT
 }
 
 PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
+    if (LoopFusionVerbose) {
+        errs() << "Running LoopFusion pass on function: " << F.getName() << "\n";
+    }
+
     bool transformed = false;
 
     DominatorTree *DT = nullptr;
@@ -221,6 +405,8 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
     LoopInfo *LI = nullptr;
 
     bool isLoopFusionApplied;
+    int fusionCount = 0;
+
     do {
         isLoopFusionApplied = false;
 
@@ -228,16 +414,35 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
 
         SmallVector<Loop*, 4> loops = LI->getLoopsInPreorder();
 
+        if (LoopFusionVerbose) {
+            errs() << "Found " << loops.size() << " loops in function\n";
+        }
+
         for (auto first_it = loops.begin(); first_it != loops.end(); ++first_it) {
             Loop *L1 = *first_it;
 
             for (auto second_it = std::next(first_it); second_it != loops.end(); ++second_it) {
                 Loop *L2 = *second_it;
 
+                if (LoopFusionVerbose) {
+                    errs() << "\nAttempting to fuse loops:\n";
+                    errs() << "  Loop 1 header: ";
+                    L1->getHeader()->printAsOperand(errs(), false);
+                    errs() << "\n  Loop 2 header: ";
+                    L2->getHeader()->printAsOperand(errs(), false);
+                    errs() << "\n";
+                }
+
                 if (isLoopFusionApplicable(*L1, *L2, *SE, *DT, *PDT, *DI)) {
                     applyLoopFusion(*L1, *L2);
+                    fusionCount++;
+
+                    if (LoopFusionVerbose) {
+                        errs() << "Successfully applied fusion #" << fusionCount << "\n";
+                    }
 
                     isLoopFusionApplied = true;
+                    transformed = true;
                     break;
                 }
             }
@@ -246,9 +451,17 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
         }
 
         if (isLoopFusionApplied) {
+            if (LoopFusionVerbose) {
+                errs() << "Invalidating analysis after fusion\n";
+            }
             AM.invalidate(F, PreservedAnalyses::none());
         }
     } while(isLoopFusionApplied);
+
+    if (LoopFusionVerbose) {
+        errs() << "\nLoop Fusion pass complete - applied " << fusionCount
+               << " fusion" << (fusionCount != 1 ? "s" : "") << "\n";
+    }
 
     return PreservedAnalyses::none();
 }
