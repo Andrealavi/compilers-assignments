@@ -1,38 +1,6 @@
 #include "loopFusion.hpp"
-#include <istream>
-#include <iterator>
-#include <llvm-19/llvm/Analysis/DependenceAnalysis.h>
-#include <llvm-19/llvm/Analysis/LoopInfo.h>
-#include <llvm-19/llvm/Analysis/PostDominators.h>
-#include <llvm-19/llvm/Analysis/ScalarEvolution.h>
-#include <llvm-19/llvm/IR/BasicBlock.h>
-#include <llvm-19/llvm/IR/CFG.h>
-#include <llvm-19/llvm/IR/Dominators.h>
-#include <llvm-19/llvm/IR/Function.h>
-#include <llvm-19/llvm/IR/InstrTypes.h>
-#include <llvm-19/llvm/IR/Instruction.h>
-#include <llvm-19/llvm/IR/Instructions.h>
-#include <llvm-19/llvm/IR/PassManager.h>
-#include <llvm-19/llvm/Support/Casting.h>
-#include <llvm-19/llvm/Support/raw_ostream.h>
-#include <vector>
 
 using namespace llvm;
-
-/**
- * Command-line option that enables verbose output for the optimizer.
- * When enabled, the pass will print detailed information about
- * each optimization that is applied.
- *
- * Use with `-local-opts-verbose` flag when running opt.
- */
-static cl::opt<bool> LocalOptsVerbose(
-    "local-opts-verbose",
-    cl::desc(
-        "Enables verbose output for the different optimizations"
-    ),
-    cl::init(false)
-);
 
 BasicBlock* getBlockToCheck(Loop &L) {
     return L.isGuarded() ? L.getLoopGuardBranch()->getParent() : L.getLoopPreheader() ;
@@ -86,12 +54,6 @@ std::vector<StoreInst*> getLoopStores(Loop &L) {
 
 bool areDependent(Loop &L1, Loop &L2, DependenceInfo &DI) {
     std::vector<StoreInst*> l1Stores = getLoopStores(L1);
-
-    for (Instruction &inst : *L1.getHeader()) {
-        if (LoadInst *LI = dyn_cast<LoadInst>(&inst)) {
-            if (isDependent(*LI, l1Stores, DI)) return true;
-        }
-    }
 
     for (BasicBlock *BB : L2.getBlocks()) {
         for (Instruction &inst : *BB) {
@@ -160,6 +122,50 @@ bool hasPreheader(Loop &L) {
     return L.getLoopPreheader() != nullptr;
 }
 
+void removeCompareAndLoad(CmpInst *inst) {
+    if (inst->hasNUses(0)) {
+        inst->print(outs());
+        if (LoadInst *LI = dyn_cast<LoadInst>(inst->getOperand(0))) {
+            LI->eraseFromParent();
+        }
+
+        inst->eraseFromParent();
+    }
+}
+
+void fuseHeader(BasicBlock *l1Header, BasicBlock *l2Header, BasicBlock *l1First) {
+    Instruction *l1termInst = l1Header->getTerminator();
+    Instruction *l2termInst = l2Header->getTerminator();
+
+    std::vector<Instruction*> instsToMove;
+
+    for (Instruction &inst : *l2Header) {
+        if (&inst != l2termInst) instsToMove.push_back(&inst);
+    }
+
+    for (Instruction *inst : instsToMove) {
+        if (PHINode *PN = dyn_cast<PHINode>(inst)) {
+            if (!PN->hasNUses(0)) PN->moveBefore(l1Header->getFirstNonPHI());
+        } else if (inst != l2termInst) {
+            inst->moveBefore(l1termInst);
+        }
+    }
+
+    l2termInst->moveAfter(l1termInst);
+    l1termInst->eraseFromParent();
+    l2termInst->setSuccessor(0, l1First);
+
+    std::vector<BasicBlock*> bbToErase;
+
+    for (BasicBlock *BB : predecessors(l2Header)) {
+        if (BB->hasNPredecessors(0)) bbToErase.push_back(BB);
+    }
+
+    for (BasicBlock *BB : bbToErase) BB->eraseFromParent();
+
+    l2Header->eraseFromParent();
+}
+
 void applyLoopFusion(Loop &L1, Loop &L2) {
     BasicBlock *l1First = getFirstBodyBlock(L1);
     BasicBlock *l1Last = getLastBodyBlock(L1);
@@ -169,6 +175,7 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
 
     BasicBlock *l1Header = L1.getHeader();
 
+    BasicBlock *l2Preheader = L2.getLoopPreheader();
     BasicBlock *l2Header = L2.getHeader();
     BasicBlock *l2Exit = L2.getExitBlock();
 
@@ -183,16 +190,10 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
         }
     }
 
-    BasicBlock *jumpBB = nullptr;
-    if (hasPreheader(L2)) {
-        jumpBB = L2.getLoopPreheader();
-    } else {
-        jumpBB = L2.getHeader();
-    }
+    L2.getLoopPreheader()->replaceAllUsesWith(L1.getLoopPreheader());
+    L2.getLoopLatch()->replaceAllUsesWith(L1.getLoopLatch());
 
-    inst = BranchInst::Create(jumpBB, l1Header->getTerminator());
-    l1Header->getTerminator()->eraseFromParent();
-    l2Header->getTerminator()->setSuccessor(0, l1First);
+    fuseHeader(l1Header, l2Header, l1First);
 
     inst = BranchInst::Create(l2First, l1Last->getTerminator());
     l1Last->getTerminator()->eraseFromParent();
@@ -242,6 +243,10 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
             }
 
             if (isLoopFusionApplied) break;
+        }
+
+        if (isLoopFusionApplied) {
+            AM.invalidate(F, PreservedAnalyses::none());
         }
     } while(isLoopFusionApplied);
 
