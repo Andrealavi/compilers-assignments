@@ -178,7 +178,8 @@ bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
 
             for (User *user : ptr->users()) {
                 if (LoadInst *userLI = dyn_cast<LoadInst>(user)) {
-                    if (std::find(instsToHoist.begin(), instsToHoist.end(), user) !=
+                    if (user != inst &&
+                        std::find(instsToHoist.begin(), instsToHoist.end(), user) !=
                         instsToHoist.end()) {
 
                         canBeHoisted = false;
