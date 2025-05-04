@@ -29,17 +29,28 @@ bool isOutsideLoop(Instruction *inst, Loop &L) {
 /**
     Checks if a load instruction is loop invariant
 
-    A load instruction is loop invariant if it is not followed by a store or if it dominates it and the stored value is equal
+    A load instruction is loop invariant if it is not followed by a store or if
+    it dominates it and the stored value is equal
     to the register where the value was loaded
 */
-bool isLoadLoopInvariant(LoadInst &inst, Loop &L, DominatorTree &DT, std::vector<Instruction*> &loopInvariantInsts) {
+bool isLoadLoopInvariant(LoadInst &inst, Loop &L, DominatorTree &DT,
+    std::vector<Instruction*> &loopInvariantInsts) {
     Value *ptr = inst.getPointerOperand();
 
     for (User *user: ptr->users()) {
         if(StoreInst *SI = dyn_cast<StoreInst>(user)) {
-            Instruction *storeInstOperand = dyn_cast<Instruction>(SI->getValueOperand());
-            if (DT.dominates(&inst, SI) && storeInstOperand != &inst) return false;
-            else if (!isOutsideLoop(SI, L) && std::find(loopInvariantInsts.begin(), loopInvariantInsts.end(), SI) == loopInvariantInsts.end()) return false;
+            Instruction *storeInstOperand =
+                dyn_cast<Instruction>(SI->getValueOperand());
+            if (DT.dominates(&inst, SI) && storeInstOperand != &inst)
+                return false;
+            else if (
+                !isOutsideLoop(SI, L) &&
+                std::find(
+                    loopInvariantInsts.begin(),
+                    loopInvariantInsts.end(),
+                    SI
+                ) == loopInvariantInsts.end()
+            ) return false;
         }
     }
 
@@ -49,10 +60,20 @@ bool isLoadLoopInvariant(LoadInst &inst, Loop &L, DominatorTree &DT, std::vector
 /**
     Checks wheter a store is loop invariant
 
-    A store instruction is loop invariant if it dominates all the loads that use the same pointer and the value operand is loop invariant as well
+    A store instruction is loop invariant if it dominates all the loads that use
+    the same pointer and the value operand is loop invariant as well
 */
-bool isStoreLoopInvariant(StoreInst &inst, Loop &L, DominatorTree &DT, std::vector<Instruction*> &loopInvariantInsts) {
-    if (std::find(loopInvariantInsts.begin(), loopInvariantInsts.end(), inst.getValueOperand()) == loopInvariantInsts.end()) return false;
+bool isStoreLoopInvariant(
+    StoreInst &inst, Loop &L,
+    DominatorTree &DT, std::vector<Instruction*> &loopInvariantInsts) {
+
+    if (
+        std::find(
+            loopInvariantInsts.begin(),
+            loopInvariantInsts.end(),
+            inst.getValueOperand()
+        ) == loopInvariantInsts.end()
+    ) return false;
 
     for (User *user : inst.getPointerOperand()->users()) {
         if (LoadInst *LI = dyn_cast<LoadInst>(user)) {
@@ -65,26 +86,38 @@ bool isStoreLoopInvariant(StoreInst &inst, Loop &L, DominatorTree &DT, std::vect
 /**
     Checks if an operand is loop invariant
 
-    It simply checks if the operand/instruction is already contained in the loopInvariantInsts vector
+    It simply checks if the operand/instruction is already contained
+    in the loopInvariantInsts vector
 */
-bool isOpLoopInvariant(Instruction *inst, std::vector<Instruction*> loopInvariantInsts) {
-    return std::find(loopInvariantInsts.begin(), loopInvariantInsts.end(), inst) != loopInvariantInsts.end();
+bool isOpLoopInvariant(Instruction *inst,
+    std::vector<Instruction*> loopInvariantInsts
+) {
+    return std::find(loopInvariantInsts.begin(), loopInvariantInsts.end(), inst) !=
+        loopInvariantInsts.end();
 }
 
 /**
     Checks if an instruction is loop invariant
 
-    It uses the previously defined helper functions to simplify the logic. It also checks if the instruction is a branch or a return
+    It uses the previously defined helper functions to simplify the logic.
+    It also checks if the instruction is a branch or a return
 */
-bool isLoopInvariant(Instruction &inst, Loop &L, DominatorTree &DT, std::vector<Instruction*> &loopInvariantInsts) {
+bool isLoopInvariant(Instruction &inst, Loop &L, DominatorTree &DT,
+    std::vector<Instruction*> &loopInvariantInsts) {
+
     if (BranchInst *BI = dyn_cast<BranchInst>(&inst)) return false;
     else if (ReturnInst *RI = dyn_cast<ReturnInst>(&inst)) return false;
-    else if (LoadInst *LI = dyn_cast<LoadInst>(&inst)) return isLoadLoopInvariant(*LI, L, DT, loopInvariantInsts);
-    else if (StoreInst *SI = dyn_cast<StoreInst>(&inst)) return isStoreLoopInvariant(*SI, L, DT, loopInvariantInsts);
+    else if (LoadInst *LI = dyn_cast<LoadInst>(&inst))
+        return isLoadLoopInvariant(*LI, L, DT, loopInvariantInsts);
+
+    else if (StoreInst *SI = dyn_cast<StoreInst>(&inst))
+        return isStoreLoopInvariant(*SI, L, DT, loopInvariantInsts);
 
     for (Use &op : inst.operands()) {
         if (Instruction *opInst = dyn_cast<Instruction>(op)) {
-            if (!isOpLoopInvariant(dyn_cast<Instruction>(op), loopInvariantInsts) &&
+            if (!isOpLoopInvariant(
+                    dyn_cast<Instruction>(op), loopInvariantInsts
+                ) &&
                 !isOutsideLoop(dyn_cast<Instruction>(op), L) &&
                 !isa<ConstantInt>(op)) return false;
         }
@@ -102,12 +135,15 @@ std::vector<Instruction*> getLoopInvariantInsts(Loop &L, DominatorTree &DT) {
     BasicBlock *header = L.getHeader();
 
     for (Instruction &inst : *header) {
-        if (isLoopInvariant(inst, L, DT, instsToHoist)) instsToHoist.push_back(&inst);
+        if (isLoopInvariant(inst, L, DT, instsToHoist))
+            instsToHoist.push_back(&inst);
     }
 
     for (BasicBlock *BB : L.getBlocks()) {
         for (Instruction &inst : *BB) {
-            if (isLoopInvariant(inst, L, DT, instsToHoist)) instsToHoist.push_back(&inst);
+            if (isLoopInvariant(inst, L, DT, instsToHoist)) {
+                instsToHoist.push_back(&inst);
+            }
         }
     }
 
@@ -116,7 +152,8 @@ std::vector<Instruction*> getLoopInvariantInsts(Loop &L, DominatorTree &DT) {
 
 /**
     Hoists instruction from the loop's blocks up to the loop's preheader.
-    It also removes repeated loads and checks for store instructions that use the same pointer
+    It also removes repeated loads and checks for store instructions
+    that use the same pointer
 */
 bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
     bool isChanged = false;
@@ -132,7 +169,8 @@ bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
 
             for (User *user : ptr->users()) {
                 if (StoreInst *userSI = dyn_cast<StoreInst>(user)) {
-                    if (user != inst && !isOutsideLoop(userSI, L)) canBeHoisted = false;
+                    if (user != inst && !isOutsideLoop(userSI, L))
+                        canBeHoisted = false;
                 }
             }
         } else if (LoadInst *LI = dyn_cast<LoadInst>(inst)) {
@@ -140,13 +178,16 @@ bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
 
             for (User *user : ptr->users()) {
                 if (LoadInst *userLI = dyn_cast<LoadInst>(user)) {
-                    if (std::find(instsToHoist.begin(), instsToHoist.end(), user) != instsToHoist.end()) {
+                    if (std::find(instsToHoist.begin(), instsToHoist.end(), user) !=
+                        instsToHoist.end()) {
+
                         canBeHoisted = false;
                         inst->replaceAllUsesWith(user);
                         inst->eraseFromParent();
                     }
                 }
             }
+
         }
 
         if (canBeHoisted) instsToHoist.push_back(inst);
@@ -168,18 +209,19 @@ bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
 bool runOnLoop(Loop &L, DominatorTree &DT) {
     std::vector<Instruction*> loopInvariantInsts = getLoopInvariantInsts(L, DT);
 
-    if (LICMVerbose) {}
+    if (LICMVerbose) {
         outs() << "Loop Invariant instructions:\n\n";
 
         for (Instruction *inst : loopInvariantInsts) {
             outs() << "Instruction : ";
             inst->print(outs());
             outs() << "\n";
+        }
 
         outs() << "\n\n";
     }
 
-
+    //return true;
     return hoistInst(L, loopInvariantInsts);
 }
 
