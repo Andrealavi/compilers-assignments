@@ -105,15 +105,33 @@ bool isOpLoopInvariant(Instruction *inst,
 bool isLoopInvariant(Instruction &inst, Loop &L, DominatorTree &DT,
     std::vector<Instruction*> &loopInvariantInsts) {
 
+    /*
+        We don't want to hoist branch, call and return instructions,
+        because this will lead to problems.
+
+        If we hoist branch instructions, we will break the cfg.
+        If we hoist call instructions, we will could have problems related to its
+        side effects and return values. Moreover it would be difficult to check
+        whether it is invariant.
+        If we hoist return instruction we will break the cfg.
+    */
     if (BranchInst *BI = dyn_cast<BranchInst>(&inst)) return false;
     else if (CallInst *CI = dyn_cast<CallInst>(&inst)) return false;
     else if (ReturnInst *RI = dyn_cast<ReturnInst>(&inst)) return false;
-    else if (LoadInst *LI = dyn_cast<LoadInst>(&inst))
-        return isLoadLoopInvariant(*LI, L, DT, loopInvariantInsts);
 
+    /*
+        If we have a load or a store we have to check if they are loop invariant
+        or not. If we use mem2reg pass these checks will be avoided, because
+        there won't be any load/store.
+    */
+    if (LoadInst *LI = dyn_cast<LoadInst>(&inst))
+        return isLoadLoopInvariant(*LI, L, DT, loopInvariantInsts);
     else if (StoreInst *SI = dyn_cast<StoreInst>(&inst))
         return isStoreLoopInvariant(*SI, L, DT, loopInvariantInsts);
 
+    /*
+        For every instruction operand we check
+    */
     for (Use &op : inst.operands()) {
         if (Instruction *opInst = dyn_cast<Instruction>(op)) {
             if (!isOpLoopInvariant(
@@ -133,13 +151,13 @@ bool isLoopInvariant(Instruction &inst, Loop &L, DominatorTree &DT,
 std::vector<Instruction*> getLoopInvariantInsts(Loop &L, DominatorTree &DT) {
     std::vector<Instruction*> instsToHoist;
 
-    BasicBlock *header = L.getHeader();
+    /*
+        We check for every instruction of the loop if it is loop invariant.
 
-    for (Instruction &inst : *header) {
-        if (isLoopInvariant(inst, L, DT, instsToHoist))
-            instsToHoist.push_back(&inst);
-    }
-
+        A single iteration is performed because the instruction will be already
+        added to the instruction to hoist if the ir is in SSA form
+        (each definition must dominates its uses).
+    */
     for (BasicBlock *BB : L.getBlocks()) {
         for (Instruction &inst : *BB) {
             if (isLoopInvariant(inst, L, DT, instsToHoist)) {
@@ -154,7 +172,7 @@ std::vector<Instruction*> getLoopInvariantInsts(Loop &L, DominatorTree &DT) {
 /**
     Hoists instruction from the loop's blocks up to the loop's preheader.
     It also removes repeated loads and checks for store instructions
-    that use the same pointer
+    that use the same pointer.
 */
 bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
     bool isChanged = false;
@@ -165,6 +183,10 @@ bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
     for (Instruction *inst : loopInvariantInsts) {
         bool canBeHoisted = true;
 
+        /*
+            If the pointer operand is used in another store instruction within the loop, the instruction should not be hoisted. This means that
+            there are multiple definitions of the same variable.
+        */
         if (StoreInst *SI = dyn_cast<StoreInst>(inst)) {
             Value *ptr = SI->getPointerOperand();
 
@@ -175,14 +197,20 @@ bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
                 }
             }
         } else if (LoadInst *LI = dyn_cast<LoadInst>(inst)) {
+            /*
+                If the pointer operand is used in another instruction
+                that is invariant as well, the current instruction
+                is removed and not hoisted since it would be a redundant
+                operation.
+            */
             Value *ptr = LI->getPointerOperand();
 
             for (User *user : ptr->users()) {
                 if (LoadInst *userLI = dyn_cast<LoadInst>(user)) {
                     if (user != inst &&
-                        std::find(instsToHoist.begin(), instsToHoist.end(), user) !=
-                        instsToHoist.end()) {
-
+                        std::find(
+                            instsToHoist.begin(), instsToHoist.end(), user
+                        ) != instsToHoist.end()) {
                         canBeHoisted = false;
                         inst->replaceAllUsesWith(user);
                         inst->eraseFromParent();
@@ -195,6 +223,9 @@ bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
         if (canBeHoisted) instsToHoist.push_back(inst);
     }
 
+    /*
+        Performs instruction hoisting
+    */
     for (Instruction *inst : instsToHoist) {
         inst->removeFromParent();
         inst->insertBefore(preheader->getTerminator());
@@ -211,6 +242,10 @@ bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
 bool runOnLoop(Loop &L, DominatorTree &DT) {
     std::vector<Instruction*> loopInvariantInsts = getLoopInvariantInsts(L, DT);
 
+    /*
+        If verbose output is enabled all the invariant instructions
+        are printed during the pass execution.
+    */
     if (LICMVerbose) {
         outs() << "Loop Invariant instructions:\n\n";
 
@@ -223,7 +258,6 @@ bool runOnLoop(Loop &L, DominatorTree &DT) {
         outs() << "\n\n";
     }
 
-    //return true;
     return hoistInst(L, loopInvariantInsts);
 }
 
