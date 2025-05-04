@@ -106,6 +106,7 @@ bool isLoopInvariant(Instruction &inst, Loop &L, DominatorTree &DT,
     std::vector<Instruction*> &loopInvariantInsts) {
 
     if (BranchInst *BI = dyn_cast<BranchInst>(&inst)) return false;
+    else if (CallInst *CI = dyn_cast<CallInst>(&inst)) return false;
     else if (ReturnInst *RI = dyn_cast<ReturnInst>(&inst)) return false;
     else if (LoadInst *LI = dyn_cast<LoadInst>(&inst))
         return isLoadLoopInvariant(*LI, L, DT, loopInvariantInsts);
