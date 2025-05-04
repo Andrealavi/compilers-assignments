@@ -8,10 +8,11 @@ int main() {
 
         a = b + 1;
 
+        int e;
         if (a > 3) {
-            int e = a + b * 2;
+            e = a + b * 2;
         } else {
-            int e = d + b / 2;
+            e = d + b / 2;
         }
 
         int f = c + d;
