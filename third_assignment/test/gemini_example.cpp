@@ -97,10 +97,6 @@ int main() {
         // TODO: CONSIDER OPERATION SAFETY
 
         // Case 11: A potentially unsafe operation (division).
-        // 'y' is defined outside and not modified, so '100 / y' is invariant.
-        // Since y=20 (non-zero), this is safe. A good LICM should hoist it.
-        // If 'y' could be zero, hoisting might be unsafe if the loop doesn't execute.
-        // Expected: Should be hoisted as y is non-zero.
         int potentially_unsafe_inv = 100 / y;
         result += potentially_unsafe_inv;
 
