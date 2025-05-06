@@ -27,63 +27,6 @@ bool isOutsideLoop(Instruction *inst, Loop &L) {
 }
 
 /**
-    Checks if a load instruction is loop invariant
-
-    A load instruction is loop invariant if it is not followed by a store or if
-    it dominates it and the stored value is equal
-    to the register where the value was loaded
-*/
-bool isLoadLoopInvariant(LoadInst &inst, Loop &L, DominatorTree &DT,
-    std::vector<Instruction*> &loopInvariantInsts) {
-    Value *ptr = inst.getPointerOperand();
-
-    for (User *user: ptr->users()) {
-        if(StoreInst *SI = dyn_cast<StoreInst>(user)) {
-            Instruction *storeInstOperand =
-                dyn_cast<Instruction>(SI->getValueOperand());
-            if (DT.dominates(&inst, SI) && storeInstOperand != &inst)
-                return false;
-            else if (
-                !isOutsideLoop(SI, L) &&
-                std::find(
-                    loopInvariantInsts.begin(),
-                    loopInvariantInsts.end(),
-                    SI
-                ) == loopInvariantInsts.end()
-            ) return false;
-        }
-    }
-
-    return true;
-}
-
-/**
-    Checks wheter a store is loop invariant
-
-    A store instruction is loop invariant if it dominates all the loads that use
-    the same pointer and the value operand is loop invariant as well
-*/
-bool isStoreLoopInvariant(
-    StoreInst &inst, Loop &L,
-    DominatorTree &DT, std::vector<Instruction*> &loopInvariantInsts) {
-
-    if (
-        std::find(
-            loopInvariantInsts.begin(),
-            loopInvariantInsts.end(),
-            inst.getValueOperand()
-        ) == loopInvariantInsts.end()
-    ) return false;
-
-    for (User *user : inst.getPointerOperand()->users()) {
-        if (LoadInst *LI = dyn_cast<LoadInst>(user)) {
-            if (!DT.dominates(&inst, LI) && !isOutsideLoop(LI, L)) return false;
-        }
-    }
-
-    return true; }
-
-/**
     Checks if an operand is loop invariant
 
     It simply checks if the operand/instruction is already contained
@@ -115,22 +58,24 @@ bool isLoopInvariant(Instruction &inst, Loop &L, DominatorTree &DT,
         whether it is invariant.
         If we hoist return instruction we will break the cfg.
     */
-    if (BranchInst *BI = dyn_cast<BranchInst>(&inst)) return false;
-    else if (CallInst *CI = dyn_cast<CallInst>(&inst)) return false;
-    else if (ReturnInst *RI = dyn_cast<ReturnInst>(&inst)) return false;
+    if (isa<BranchInst>(&inst)) return false;
+    else if (isa<CallInst>(&inst)) return false;
+    else if (isa<ReturnInst>(&inst)) return false;
+    else if (isa<LoadInst>(&inst)) return false;
+    else if (isa<StoreInst>(&inst)) return false;
+    else if (isa<PHINode>(&inst)) return false;
 
     /*
-        If we have a load or a store we have to check if they are loop invariant
-        or not. If we use mem2reg pass these checks will be avoided, because
-        there won't be any load/store.
+        We check if the instruction can be safely executed
+        by a specific LLVM function that checks whether
+        an instruction has side effects or undefined behaviours,
+        such as loading from invalid pointers or dividing by zero.
     */
-    if (LoadInst *LI = dyn_cast<LoadInst>(&inst))
-        return isLoadLoopInvariant(*LI, L, DT, loopInvariantInsts);
-    else if (StoreInst *SI = dyn_cast<StoreInst>(&inst))
-        return isStoreLoopInvariant(*SI, L, DT, loopInvariantInsts);
+    if (!isSafeToSpeculativelyExecute(&inst)) return false;
 
     /*
-        For every instruction operand we check
+        For every instruction operand we check whether it is loop invariant,
+        a constant or outside of the loop
     */
     for (Use &op : inst.operands()) {
         if (Instruction *opInst = dyn_cast<Instruction>(op)) {
@@ -138,7 +83,19 @@ bool isLoopInvariant(Instruction &inst, Loop &L, DominatorTree &DT,
                     dyn_cast<Instruction>(op), loopInvariantInsts
                 ) &&
                 !isOutsideLoop(dyn_cast<Instruction>(op), L) &&
-                !isa<ConstantInt>(op)) return false;
+                !isa<Constant>(op)) return false;
+        }
+    }
+
+
+    return true;
+}
+
+bool checkDominance(Instruction &inst, DominatorTree &DT) {
+
+    for (User *user : inst.users()){
+        if (!DT.dominates(&inst, dyn_cast<Instruction>(user))) {
+            return false;
         }
     }
 
@@ -160,7 +117,9 @@ std::vector<Instruction*> getLoopInvariantInsts(Loop &L, DominatorTree &DT) {
     */
     for (BasicBlock *BB : L.getBlocks()) {
         for (Instruction &inst : *BB) {
-            if (isLoopInvariant(inst, L, DT, instsToHoist)) {
+            if (isLoopInvariant(inst, L, DT, instsToHoist) &&
+                checkDominance(inst, DT)
+            ) {
                 instsToHoist.push_back(&inst);
             }
         }
@@ -174,54 +133,13 @@ std::vector<Instruction*> getLoopInvariantInsts(Loop &L, DominatorTree &DT) {
     It also removes repeated loads and checks for store instructions
     that use the same pointer.
 */
-bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
+bool hoistInst(
+    Loop &L,
+    std::vector<Instruction*> &instsToHoist,
+    DominatorTree &DT
+) {
     bool isChanged = false;
     BasicBlock *preheader = L.getLoopPreheader();
-
-    std::vector<Instruction*> instsToHoist;
-
-    for (Instruction *inst : loopInvariantInsts) {
-        bool canBeHoisted = true;
-
-        /*
-            If the pointer operand is used in another store instruction within the loop, the instruction should not be hoisted. This means that
-            there are multiple definitions of the same variable.
-        */
-        if (StoreInst *SI = dyn_cast<StoreInst>(inst)) {
-            Value *ptr = SI->getPointerOperand();
-
-            for (User *user : ptr->users()) {
-                if (StoreInst *userSI = dyn_cast<StoreInst>(user)) {
-                    if (user != inst && !isOutsideLoop(userSI, L))
-                        canBeHoisted = false;
-                }
-            }
-        } else if (LoadInst *LI = dyn_cast<LoadInst>(inst)) {
-            /*
-                If the pointer operand is used in another instruction
-                that is invariant as well, the current instruction
-                is removed and not hoisted since it would be a redundant
-                operation.
-            */
-            Value *ptr = LI->getPointerOperand();
-
-            for (User *user : ptr->users()) {
-                if (LoadInst *userLI = dyn_cast<LoadInst>(user)) {
-                    if (user != inst &&
-                        std::find(
-                            instsToHoist.begin(), instsToHoist.end(), user
-                        ) != instsToHoist.end()) {
-                        canBeHoisted = false;
-                        inst->replaceAllUsesWith(user);
-                        inst->eraseFromParent();
-                    }
-                }
-            }
-
-        }
-
-        if (canBeHoisted) instsToHoist.push_back(inst);
-    }
 
     /*
         Performs instruction hoisting
@@ -239,7 +157,12 @@ bool hoistInst(Loop &L, std::vector<Instruction*> &loopInvariantInsts) {
 /**
     Runs loop invariant code motion optimization on the given loop
 */
-bool runOnLoop(Loop &L, DominatorTree &DT) {
+bool runOnLoop(Loop &L, DominatorTree &DT, ScalarEvolution &SE) {
+    SCEV const *backEdgeCount = SE.getBackedgeTakenCount(&L);
+    if (const SCEVConstant *tripCount = dyn_cast<SCEVConstant>(backEdgeCount)) {
+        if (tripCount->getAPInt().getSExtValue() == 0) return false;
+    }
+
     std::vector<Instruction*> loopInvariantInsts = getLoopInvariantInsts(L, DT);
 
     /*
@@ -258,7 +181,7 @@ bool runOnLoop(Loop &L, DominatorTree &DT) {
         outs() << "\n\n";
     }
 
-    return hoistInst(L, loopInvariantInsts);
+    return hoistInst(L, loopInvariantInsts, DT);
 }
 
 PreservedAnalyses LoopInvariantCodeMotion::run(
@@ -268,8 +191,9 @@ PreservedAnalyses LoopInvariantCodeMotion::run(
     LPMUpdater &LU
 ) {
     DominatorTree &DT = LAR.DT;
+    ScalarEvolution &SE = LAR.SE;
 
-    if (runOnLoop(L, DT)) return PreservedAnalyses::none();
+    if (runOnLoop(L, DT, SE)) return PreservedAnalyses::none();
 
     return PreservedAnalyses::all();
 };
