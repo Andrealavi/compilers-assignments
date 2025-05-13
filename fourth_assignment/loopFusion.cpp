@@ -350,6 +350,30 @@ bool isNegativeDistance(
 }
 
 /**
+ * @brief Helper function used to fill the given vectors with load and store
+ * instructions
+ *
+ * @param L The loop where the load and store instructions are
+ * @param storesVec Vector where store instructions will be placed
+ * @param loadsVec Vector wheere load instructions will be placed
+ */
+void fillLoadStoreVectors(
+    Loop &L,
+    std::vector<Instruction*> &storesVec,
+    std::vector<Instruction*> &loadsVec
+) {
+    for (BasicBlock *BB: L.getBlocks()) {
+        for (Instruction &inst : *BB) {
+            if (LoadInst *LI = dyn_cast<LoadInst>(&inst)) {
+                loadsVec.push_back(&inst);
+            } else if (StoreInst *SI = dyn_cast<StoreInst>(&inst)) {
+                storesVec.push_back(&inst);
+            }
+        }
+    }
+}
+
+/**
  * @brief Check if a load instruction depends on any of the store instructions
  *
  * Uses DependenceInfo to determine if there's a dependence between the load
@@ -367,31 +391,12 @@ bool areDependent(
     std::vector<Instruction*> l1StoreInsts;
     std::vector<Instruction*> l1LoadInsts;
 
+    fillLoadStoreVectors(L1, l1StoreInsts, l1LoadInsts);
+
     std::vector<Instruction*> l2StoreInsts;
     std::vector<Instruction*> l2LoadInsts;
 
-
-    for (BasicBlock *BB: L1.getBlocks()) {
-        for (Instruction &inst : *BB) {
-            if (
-                LoadInst *LI = dyn_cast<LoadInst>(&inst)
-            ) l1LoadInsts.push_back(&inst);
-            else if (
-                StoreInst *SI = dyn_cast<StoreInst>(&inst)
-            ) l1StoreInsts.push_back(&inst);
-        }
-    }
-
-    for (BasicBlock *BB: L2.getBlocks()) {
-        for (Instruction &inst : *BB) {
-            if (
-                LoadInst *LI = dyn_cast<LoadInst>(&inst)
-            ) l2LoadInsts.push_back(&inst);
-            else if (
-                StoreInst *SI = dyn_cast<StoreInst>(&inst)
-            ) l2StoreInsts.push_back(&inst);
-        }
-    }
+    fillLoadStoreVectors(L2, l2StoreInsts, l2LoadInsts);
 
     for (Instruction *store : l1StoreInsts) {
         for (Instruction *load : l2LoadInsts) {
