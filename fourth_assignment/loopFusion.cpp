@@ -272,6 +272,16 @@ bool isNegativeDistance(
     const SCEV *inst_delta = SE.getMinusSCEV(
         start_inst1, start_inst2
     );
+    const SCEVConstant *const_delta = dyn_cast<SCEVConstant>(inst_delta);
+
+    const SCEV *step_inst1 = inst1_add_rec->getStepRecurrence(SE);
+    const SCEV *step_inst2 = inst2_add_rec->getStepRecurrence(SE);
+
+    const SCEV *step_delta = SE.getMinusSCEV(
+        step_inst1, step_inst2
+    );
+    const SCEVConstant *const_step_delta = dyn_cast<SCEVConstant>(step_delta);
+
 
     if (LoopFusionVerbose) {
         outs() << "   Delta SCEV (start_inst1 - start_inst2): ";
@@ -288,10 +298,16 @@ bool isNegativeDistance(
             outs() << " (Value: " << const_delta->getAPInt().getSExtValue() << ")\n";
         }
 
-        bool isDistanceNegative = SE.isKnownPredicate(
+        bool isBaseDistanceNegative = SE.isKnownPredicate(
             ICmpInst::ICMP_SLT,
             inst_delta,
             SE.getZero(const_delta->getType())
+        );
+
+        bool isStepDistanceNegative = SE.isKnownPredicate(
+            ICmpInst::ICMP_SLT,
+            step_delta,
+            SE.getZero(const_step_delta->getType())
         );
 
         if (LoopFusionVerbose) {
