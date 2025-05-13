@@ -33,7 +33,8 @@ static cl::opt<bool> LoopFusionVerbose(
  * @return BasicBlock* The block to check for adjacency
  */
 BasicBlock* getBlockToCheck(Loop &L) {
-    return L.isGuarded() ? L.getLoopGuardBranch()->getParent() : L.getLoopPreheader() ;
+    return L.isGuarded() ?
+        L.getLoopGuardBranch()->getParent() : L.getLoopPreheader() ;
 }
 
 /**
@@ -140,6 +141,171 @@ bool haveSameItNum(Loop &L1, Loop &L2, ScalarEvolution &SE) {
 }
 
 /**
+ * @brief Retrieves the Scalar Evolution Additive Recurrence (SCEVAddRecExpr)
+ * for the memory pointer operand of a given instruction within a specific loop.
+ *
+ * This function first gets the SCEV expression for the pointer operand of the
+ * instruction at the scope of the given loop. Then, it attempts to convert
+ * this SCEV expression into an SCEVAddRecExpr.
+ *
+ * @param inst The instruction (typically a Load or Store)
+ * whose pointer operand's SCEV is to be analyzed.
+ * @param L The loop in whose context the SCEV is to be computed.
+ * @param SE A reference to the ScalarEvolution analysis results.
+ *
+ * @return const SCEVAddRecExpr* A pointer to the SCEVAddRecExpr
+ * if the pointer operand has an affine recurrence form within the loop
+ * or nullptr otherwise.
+ */
+const SCEVAddRecExpr* getSCEVAddRec(
+    Instruction &inst, Loop &L, ScalarEvolution &SE
+) {
+    SmallPtrSet<const SCEVPredicate *, 4> preds;
+
+    const SCEV *inst_SCEV = SE.getSCEVAtScope(
+        getLoadStorePointerOperand(&inst), &L
+    );
+
+    return SE.convertSCEVToAddRecWithPredicates(
+        inst_SCEV, &L, preds
+    );
+}
+
+/**
+ * @brief Determines if a negative memory access distance might exist between
+ * the starting memory addresses of two instructions, `inst1` and `inst2`.
+ *
+ * This function analyzes the memory access patterns using Scalar Evolution.
+ *
+ * It computes SCEVAddRecExprs for the pointer operands of both instructions.
+ * - If either instruction doesn't return a SCEVAddRecExpr, or if their base
+ *   pointers differ, it's assumed no provable (negative) dependence exists
+ *   between these specific start pointers based on this analysis,
+ *   so it returns `false`.
+ * - If the base pointers are the same, it calculates the difference between
+ *   their start offsets (`start_inst1 - start_inst2`).
+ *   - If this difference (`inst_delta`) is a compile-time constant:
+ *     - It returns `true` if `inst_delta` is strictly less than zero.
+ *     - It returns `false` otherwise (if `inst_delta` is >= 0).
+ *   - If `inst_delta` is not a compile-time constant, this function
+ *     conservatively returns `true`, indicating a potential negative distance
+ *     because it cannot be disproven.
+ *
+ * @param L1 The loop context for `inst1`.
+ * @param L2 The loop context for `inst2` (can be the same as `L1`).
+ * @param SE A reference to the ScalarEvolution analysis results.
+ * @param inst1 The first instruction (e.g., a store whose address is `ptr1_start + i*stride1`).
+ * @param inst2 The second instruction (e.g., a load whose address is `ptr2_start + j*stride2`).
+ *              This function specifically compares `ptr1_start` and `ptr2_start`.
+ * @return bool `true` if a negative distance is determined
+ * or conservatively assumed,
+ * `false` if it's determined to be non-negative or if the preconditions
+ * (same base, valid AddRecs) are not met.
+ */
+bool isNegativeDistance(
+    Loop &L1,
+    Loop &L2,
+    ScalarEvolution &SE,
+    Instruction &inst1,
+    Instruction &inst2
+) {
+    if (LoopFusionVerbose) {
+         outs() << "isNegativeDistance check between:\n";
+         outs() << "   Inst1: " << inst1;
+         if (inst1.getParent()) outs() << " (in BB: " << inst1.getParent()->getName() << ")";
+         outs() << " in Loop " << (L1.getHeader() ? L1.getHeader()->getName() : "<?>") << "\n";
+         outs() << "   Inst2: " << inst2;
+         if (inst2.getParent()) outs() << " (in BB: " << inst2.getParent()->getName() << ")";
+         outs() << " in Loop " << (L2.getHeader() ? L2.getHeader()->getName() : "<?>") << "\n";
+    }
+
+    const SCEVAddRecExpr *inst1_add_rec = getSCEVAddRec(inst1, L1, SE);
+    const SCEVAddRecExpr *inst2_add_rec = getSCEVAddRec(inst2, L2, SE);
+
+    if (LoopFusionVerbose) {
+        outs() << "   Inst1 AddRec: ";
+        if (inst1_add_rec) inst1_add_rec->print(outs()); else outs() << "(null)";
+        outs() << "\n";
+        outs() << "   Inst2 AddRec: ";
+        if (inst2_add_rec) inst2_add_rec->print(outs()); else outs() << "(null)";
+        outs() << "\n";
+    }
+
+    if (!(inst1_add_rec && inst2_add_rec)) {
+        if (LoopFusionVerbose) {
+            outs() << "   One or both instructions do not have a SCEVAddRecExpr. Returning false (no provable negative distance).\n";
+        }
+        return false;
+    }
+
+    const SCEV *inst1_base = SE.getPointerBase(inst1_add_rec);
+    const SCEV *inst2_base = SE.getPointerBase(inst2_add_rec);
+
+    if (LoopFusionVerbose) {
+        outs() << "   Inst1 Base SCEV: ";
+        if (inst1_base) inst1_base->print(outs()); else outs() << "(null)";
+        outs() << "\n";
+        outs() << "   Inst2 Base SCEV: ";
+        if (inst2_base) inst2_base->print(outs()); else outs() << "(null)";
+        outs() << "\n";
+    }
+
+    if (inst1_base != inst2_base) {
+        if (LoopFusionVerbose) {
+            outs() << "   Base pointers' SCEVs are different. Returning false (no provable negative distance).\n";
+        }
+        return false;
+    }
+
+    const SCEV *start_inst1 = inst1_add_rec->getStart();
+    const SCEV *start_inst2 = inst2_add_rec->getStart();
+
+    if (LoopFusionVerbose) {
+        outs() << "   Start SCEV for Inst1: ";
+        if (start_inst1) start_inst1->print(outs()); else outs() << "(null)";
+        outs() << "\n";
+        outs() << "   Start SCEV for Inst2: ";
+        if (start_inst2) start_inst2->print(outs()); else outs() << "(null)";
+        outs() << "\n";
+    }
+
+    const SCEV *inst_delta = SE.getMinusSCEV(
+        start_inst1, start_inst2
+    );
+
+    if (LoopFusionVerbose) {
+        outs() << "   Delta SCEV (start_inst1 - start_inst2): ";
+        if (inst_delta) inst_delta->print(outs()); else outs() << "(null)";
+        outs() << "\n";
+    }
+
+    const SCEVConstant *const_delta = dyn_cast<SCEVConstant>(inst_delta);
+
+    if (const_delta) {
+        if (LoopFusionVerbose) { // This replaces the original unconditional print
+            outs() << "   Delta is constant: ";
+            const_delta->print(outs());
+            outs() << " (Value: " << const_delta->getAPInt().getSExtValue() << ")\n";
+        }
+
+        bool isDistanceNegative = SE.isKnownPredicate(
+            ICmpInst::ICMP_SLT,
+            inst_delta,
+            SE.getZero(const_delta->getType())
+        );
+
+        if (LoopFusionVerbose) {
+            outs() << "   Is delta < 0? " << (isDistanceNegative ? "Yes" : "No") << "\n";
+            outs() << "   Returning " << (isDistanceNegative ? "true (negative distance detected)" : "false (distance non-negative)") << ".\n";
+        }
+
+        return isDistanceNegative;
+    }
+
+    return true;
+}
+
+/**
  * @brief Check if a load instruction depends on any of the store instructions
  *
  * Uses DependenceInfo to determine if there's a dependence between the load
@@ -151,84 +317,54 @@ bool haveSameItNum(Loop &L1, Loop &L2, ScalarEvolution &SE) {
  * @return true If a dependence is found
  * @return false Otherwise
  */
-bool isDependent(LoadInst &inst, std::vector<StoreInst*> storeInsts, DependenceInfo &DI) {
-    for (StoreInst *storeInst : storeInsts) {
-        if (DI.depends(&inst, storeInst, true)) {
-            if (LoopFusionVerbose) {
-                errs() << "  Found dependency between:\n";
-                errs() << "    Load: ";
-                inst.print(errs());
-                errs() << "\n    Store: ";
-                storeInst->print(errs());
-                errs() << "\n";
-            }
-            return true;
-        }
-    }
+bool areDependent(
+    Loop &L1, Loop &L2, ScalarEvolution &SE, DependenceInfo &DI
+) {
+    std::vector<Instruction*> l1StoreInsts;
+    std::vector<Instruction*> l1LoadInsts;
 
-    return false;
-}
+    std::vector<Instruction*> l2StoreInsts;
+    std::vector<Instruction*> l2LoadInsts;
 
-/**
- * @brief Collect all store instructions from a loop
- *
- * @param L Loop to analyze
- * @return std::vector<StoreInst*> Vector of store instructions in the loop
- */
-std::vector<StoreInst*> getLoopStores(Loop &L) {
-    std::vector<StoreInst*> loopStores;
 
-    for (Instruction &inst : *L.getHeader()) {
-        if (StoreInst *SI = dyn_cast<StoreInst>(&inst)) loopStores.push_back(SI);
-    }
-
-    for (BasicBlock *BB : L.getBlocks()) {
+    for (BasicBlock *BB: L1.getBlocks()) {
         for (Instruction &inst : *BB) {
-            if (StoreInst *SI = dyn_cast<StoreInst>(&inst)) loopStores.push_back(SI);
+            if (
+                LoadInst *LI = dyn_cast<LoadInst>(&inst)
+            ) l1LoadInsts.push_back(&inst);
+            else if (
+                StoreInst *SI = dyn_cast<StoreInst>(&inst)
+            ) l1StoreInsts.push_back(&inst);
         }
     }
 
-    if (LoopFusionVerbose) {
-        errs() << "Collected " << loopStores.size() << " store instructions from loop\n";
-    }
-
-   return loopStores;
-}
-
-/**
- * @brief Check for loop-carried dependencies between two loops
- *
- * Determines if there are any data dependencies from the first loop to the second
- * that would prevent fusion.
- *
- * @param L1 First loop
- * @param L2 Second loop
- * @param DI Dependence information analysis
- * @return true If there are dependencies preventing fusion
- * @return false Otherwise
- */
-bool areDependent(Loop &L1, Loop &L2, DependenceInfo &DI) {
-    if (LoopFusionVerbose) {
-        errs() << "Checking for dependencies between loops...\n";
-    }
-
-    std::vector<StoreInst*> l1Stores = getLoopStores(L1);
-
-    for (BasicBlock *BB : L2.getBlocks()) {
+    for (BasicBlock *BB: L2.getBlocks()) {
         for (Instruction &inst : *BB) {
-            if (LoadInst *LI = dyn_cast<LoadInst>(&inst)) {
-                if (isDependent(*LI, l1Stores, DI)) {
-                    if (LoopFusionVerbose) {
-                        errs() << "Loop dependency found - fusion not possible\n";
-                    }
-                    return true;
-                }
-            }
+            if (
+                LoadInst *LI = dyn_cast<LoadInst>(&inst)
+            ) l2LoadInsts.push_back(&inst);
+            else if (
+                StoreInst *SI = dyn_cast<StoreInst>(&inst)
+            ) l2StoreInsts.push_back(&inst);
         }
     }
 
-    if (LoopFusionVerbose) {
-        errs() << "No loop dependencies found\n";
+    for (Instruction *store : l1StoreInsts) {
+        for (Instruction *load : l2LoadInsts) {
+            if (
+                DI.depends(store, load, true) &&
+                isNegativeDistance(L1, L2, SE, *store, *load)
+            ) return true;
+        }
+    }
+
+    for (Instruction *store : l2StoreInsts) {
+        for (Instruction *load : l1LoadInsts) {
+            if (
+                DI.depends(store, load, true) &&
+                isNegativeDistance(L1, L2, SE, *store, *load)
+            ) return true;
+        }
     }
 
     return false;
@@ -281,7 +417,7 @@ bool isLoopFusionApplicable(Loop &L1, Loop &L2, ScalarEvolution &SE,
             return false;
         }
 
-        bool dependent = areDependent(L1, L2, DI);
+        bool dependent = areDependent(L1, L2, SE, DI);
         if (dependent) {
             if (LoopFusionVerbose) errs() << "Loops have dependencies - fusion not possible\n";
             return false;
@@ -507,7 +643,9 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
     BranchInst *inst = nullptr;
 
     PHINode *inductionVariable = getInductionVariable(L2);
+    //PHINode *inductionVariable = L2.getCanonicalInductionVariable();
     if (inductionVariable) {
+        //PHINode *l1InductionVar = L1.getCanonicalInductionVariable();
         PHINode *l1InductionVar = getInductionVariable(L1);
 
         if (l1InductionVar) {
@@ -563,8 +701,15 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
  * @param DI Dependence information analysis (output)
  * @param LI Loop information analysis (output)
  */
-void updateLoopInfo(Function &F, FunctionAnalysisManager &AM, DominatorTree *&DT,
-    PostDominatorTree *&PDT, ScalarEvolution *&SE, DependenceInfo *&DI, LoopInfo *&LI) {
+void updateLoopInfo(
+    Function &F,
+    FunctionAnalysisManager &AM,
+    DominatorTree *&DT,
+    PostDominatorTree *&PDT,
+    ScalarEvolution *&SE,
+    DependenceInfo *&DI,
+    LoopInfo *&LI
+) {
         if (LoopFusionVerbose) {
             errs() << "Updating loop analysis information\n";
         }
@@ -588,7 +733,8 @@ void updateLoopInfo(Function &F, FunctionAnalysisManager &AM, DominatorTree *&DT
  */
 PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
     if (LoopFusionVerbose) {
-        errs() << "Running LoopFusion pass on function: " << F.getName() << "\n";
+        errs() << "Running LoopFusion pass on function: "
+            << F.getName() << "\n";
     }
 
     bool transformed = false;
@@ -613,10 +759,16 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
             errs() << "Found " << loops.size() << " loops in function\n";
         }
 
-        for (auto first_it = loops.begin(); first_it != loops.end(); ++first_it) {
+        for (
+            auto first_it = loops.begin(); first_it != loops.end(); ++first_it
+        ) {
             Loop *L1 = *first_it;
 
-            for (auto second_it = std::next(first_it); second_it != loops.end(); ++second_it) {
+            for (
+                auto second_it = std::next(first_it);
+                second_it != loops.end();
+                ++second_it
+            ) {
                 Loop *L2 = *second_it;
 
                 if (LoopFusionVerbose) {
