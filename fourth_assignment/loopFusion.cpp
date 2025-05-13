@@ -246,7 +246,7 @@ bool isNegativeDistance(
         if (LoopFusionVerbose) {
             outs() << "   One or both instructions do not have a SCEVAddRecExpr. Returning true (it is not possible to assure loop fusion).\n";
         }
-        return false;
+        return true;
     }
 
     const SCEV *inst1_base = SE.getPointerBase(inst1_add_rec);
@@ -343,7 +343,7 @@ bool isNegativeDistance(
                     "false (distance non-negative)") << ".\n";
         }
 
-        return isDistanceNegative;
+        return isBaseDistanceNegative && isStepDistanceNegative;
     }
 
     return true;
@@ -692,9 +692,7 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
     BranchInst *inst = nullptr;
 
     PHINode *inductionVariable = getInductionVariable(L2);
-    //PHINode *inductionVariable = L2.getCanonicalInductionVariable();
     if (inductionVariable) {
-        //PHINode *l1InductionVar = L1.getCanonicalInductionVariable();
         PHINode *l1InductionVar = getInductionVariable(L1);
 
         if (l1InductionVar) {
