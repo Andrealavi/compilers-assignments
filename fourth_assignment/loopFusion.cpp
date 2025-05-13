@@ -179,17 +179,22 @@ const SCEVAddRecExpr* getSCEVAddRec(
  *
  * It computes SCEVAddRecExprs for the pointer operands of both instructions.
  * - If either instruction doesn't return a SCEVAddRecExpr, or if their base
- *   pointers differ, it's assumed no provable (negative) dependence exists
+ *   pointers differ, it's assumed a negative dependence exists
  *   between these specific start pointers based on this analysis,
- *   so it returns `false`.
+ *   so it returns `true`.
  * - If the base pointers are the same, it calculates the difference between
- *   their start offsets (`start_inst1 - start_inst2`).
- *   - If this difference (`inst_delta`) is a compile-time constant:
- *     - It returns `true` if `inst_delta` is strictly less than zero.
- *     - It returns `false` otherwise (if `inst_delta` is >= 0).
- *   - If `inst_delta` is not a compile-time constant, this function
- *     conservatively returns `true`, indicating a potential negative distance
- *     because it cannot be disproven.
+ *   their start offsets and their step offsets.
+ *   - If this differences are a compile-time constant:
+ *     - It returns `true` if one of the differences is >= than zero.
+ *     - It returns `false` otherwise.
+ *   - If one of the two differences is not a compile-time constant, this
+ *     function conservatively returns `true`,
+ *     indicating a potential negative distance because it cannot be disproven.
+ *
+ * @note SCEVAddRec is a polynomial recurrence that is written in the form:
+ * `{Start, +, Step}_L`, where Start is the starting point of the recurrence,
+ * Step is the step taken at each iteration and L is the Loop,
+ * where this recurrence happens.
  *
  * @param L1 The loop context for `inst1`.
  * @param L2 The loop context for `inst2` (can be the same as `L1`).
@@ -224,16 +229,22 @@ bool isNegativeDistance(
 
     if (LoopFusionVerbose) {
         outs() << "   Inst1 AddRec: ";
-        if (inst1_add_rec) inst1_add_rec->print(outs()); else outs() << "(null)";
+
+        if (inst1_add_rec) inst1_add_rec->print(outs());
+        else outs() << "(null)";
+
         outs() << "\n";
         outs() << "   Inst2 AddRec: ";
-        if (inst2_add_rec) inst2_add_rec->print(outs()); else outs() << "(null)";
+
+        if (inst2_add_rec) inst2_add_rec->print(outs());
+        else outs() << "(null)";
+
         outs() << "\n";
     }
 
     if (!(inst1_add_rec && inst2_add_rec)) {
         if (LoopFusionVerbose) {
-            outs() << "   One or both instructions do not have a SCEVAddRecExpr. Returning false (no provable negative distance).\n";
+            outs() << "   One or both instructions do not have a SCEVAddRecExpr. Returning true (it is not possible to assure loop fusion).\n";
         }
         return false;
     }
@@ -285,17 +296,26 @@ bool isNegativeDistance(
 
     if (LoopFusionVerbose) {
         outs() << "   Delta SCEV (start_inst1 - start_inst2): ";
-        if (inst_delta) inst_delta->print(outs()); else outs() << "(null)";
+
+        if (inst_delta) inst_delta->print(outs());
+        else outs() << "(null)";
+
         outs() << "\n";
     }
 
-    const SCEVConstant *const_delta = dyn_cast<SCEVConstant>(inst_delta);
+    if (const_delta && const_step_delta) {
+        if (LoopFusionVerbose) {
+            outs() << "   Both deltas are constants:\n";
 
-    if (const_delta) {
-        if (LoopFusionVerbose) { // This replaces the original unconditional print
-            outs() << "   Delta is constant: ";
+            outs() << "   ";
             const_delta->print(outs());
-            outs() << " (Value: " << const_delta->getAPInt().getSExtValue() << ")\n";
+            outs() << " (Value: " <<
+                const_delta->getAPInt().getSExtValue() << ")\n";
+
+            outs() << "   ";
+            const_step_delta->print(outs());
+            outs() << " (Value: " <<
+                const_step_delta->getAPInt().getSExtValue() << ")\n";
         }
 
         bool isBaseDistanceNegative = SE.isKnownPredicate(
@@ -311,8 +331,16 @@ bool isNegativeDistance(
         );
 
         if (LoopFusionVerbose) {
-            outs() << "   Is delta < 0? " << (isDistanceNegative ? "Yes" : "No") << "\n";
-            outs() << "   Returning " << (isDistanceNegative ? "true (negative distance detected)" : "false (distance non-negative)") << ".\n";
+            outs() << "   Is base delta < 0? " <<
+                (isBaseDistanceNegative ? "Yes" : "No") << "\n";
+
+            outs() << "   Is step delta < 0? " <<
+                (isStepDistanceNegative ? "Yes" : "No") << "\n";
+
+            outs() << "   Returning " <<
+                (isBaseDistanceNegative && isStepDistanceNegative ?
+                    "true (negative distance detected)" :
+                    "false (distance non-negative)") << ".\n";
         }
 
         return isDistanceNegative;
