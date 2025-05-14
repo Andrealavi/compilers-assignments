@@ -1,4 +1,4 @@
-# Custom LLVM Loop Fusion Pass
+# Fourth Assignment - Loop Fusion Pass
 
 This folder contains a custom LLVM pass that implements the Loop Fusion optimization. This pass was developed as the fourth assignment for the Compilers exam.
 
