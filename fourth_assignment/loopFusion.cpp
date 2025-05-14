@@ -1,4 +1,6 @@
 /**
+ * @author Andrea Lavino
+ *
  * @file loopFusion.cpp
  * @brief Implementation of loop fusion optimization pass for LLVM
  *
