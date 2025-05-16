@@ -11,6 +11,7 @@
  */
 
 #include "loopFusion.hpp"
+#include <queue>
 
 using namespace llvm;
 
@@ -256,10 +257,15 @@ bool isNegativeDistance(
 
     if (LoopFusionVerbose) {
         outs() << "   Inst1 Base SCEV: ";
-        if (inst1_base) inst1_base->print(outs()); else outs() << "(null)";
+        if (inst1_base) inst1_base->print(outs());
+        else outs() << "(null)";
+
         outs() << "\n";
         outs() << "   Inst2 Base SCEV: ";
-        if (inst2_base) inst2_base->print(outs()); else outs() << "(null)";
+
+        if (inst2_base) inst2_base->print(outs());
+        else outs() << "(null)";
+
         outs() << "\n";
     }
 
@@ -275,10 +281,15 @@ bool isNegativeDistance(
 
     if (LoopFusionVerbose) {
         outs() << "   Start SCEV for Inst1: ";
-        if (start_inst1) start_inst1->print(outs()); else outs() << "(null)";
+        if (start_inst1) start_inst1->print(outs());
+        else outs() << "(null)";
+
         outs() << "\n";
         outs() << "   Start SCEV for Inst2: ";
-        if (start_inst2) start_inst2->print(outs()); else outs() << "(null)";
+
+        if (start_inst2) start_inst2->print(outs());
+        else outs() << "(null)";
+
         outs() << "\n";
     }
 
@@ -340,12 +351,12 @@ bool isNegativeDistance(
                 (isStepDistanceNegative ? "Yes" : "No") << "\n";
 
             outs() << "   Returning " <<
-                (isBaseDistanceNegative && isStepDistanceNegative ?
+                (isBaseDistanceNegative || isStepDistanceNegative ?
                     "true (negative distance detected)" :
                     "false (distance non-negative)") << ".\n";
         }
 
-        return isBaseDistanceNegative && isStepDistanceNegative;
+        return isBaseDistanceNegative || isStepDistanceNegative;
     }
 
     return true;
@@ -361,18 +372,26 @@ bool isNegativeDistance(
  */
 void fillLoadStoreVectors(
     Loop &L,
-    std::vector<Instruction*> &storesVec,
-    std::vector<Instruction*> &loadsVec
+    std::vector<LoadInst*> &loadsVec
 ) {
     for (BasicBlock *BB: L.getBlocks()) {
         for (Instruction &inst : *BB) {
             if (LoadInst *LI = dyn_cast<LoadInst>(&inst)) {
-                loadsVec.push_back(&inst);
-            } else if (StoreInst *SI = dyn_cast<StoreInst>(&inst)) {
-                storesVec.push_back(&inst);
+                loadsVec.push_back(LI);
             }
         }
     }
+}
+
+Value *getRealPtrValue(LoadInst *load) {
+    Value *ptr = load->getPointerOperand();
+
+    while (isa<GetElementPtrInst>(ptr)) {
+        GetElementPtrInst *GEP = cast<GetElementPtrInst>(ptr);
+        ptr = GEP->getPointerOperand();
+    }
+
+    return ptr;
 }
 
 /**
@@ -390,31 +409,36 @@ void fillLoadStoreVectors(
 bool areDependent(
     Loop &L1, Loop &L2, ScalarEvolution &SE, DependenceInfo &DI
 ) {
-    std::vector<Instruction*> l1StoreInsts;
-    std::vector<Instruction*> l1LoadInsts;
+    std::vector<LoadInst*> l2LoadInsts;
 
-    fillLoadStoreVectors(L1, l1StoreInsts, l1LoadInsts);
+    fillLoadStoreVectors(L2, l2LoadInsts);
 
-    std::vector<Instruction*> l2StoreInsts;
-    std::vector<Instruction*> l2LoadInsts;
+    for (LoadInst *load : l2LoadInsts) {
+        Value *realPtrOp = getRealPtrValue(load);
 
-    fillLoadStoreVectors(L2, l2StoreInsts, l2LoadInsts);
+        for (User *user : realPtrOp->users()) {
+            if (!L1.contains(dyn_cast<Instruction>(user))) continue;
 
-    for (Instruction *store : l1StoreInsts) {
-        for (Instruction *load : l2LoadInsts) {
-            if (
-                DI.depends(store, load, true) &&
-                isNegativeDistance(L1, L2, SE, *store, *load)
-            ) return true;
-        }
-    }
+            std::queue<Value*> instsToCheck;
+            instsToCheck.push(user);
 
-    for (Instruction *store : l2StoreInsts) {
-        for (Instruction *load : l1LoadInsts) {
-            if (
-                DI.depends(store, load, true) &&
-                isNegativeDistance(L1, L2, SE, *store, *load)
-            ) return true;
+            while (!instsToCheck.empty()) {
+                Value *inst = instsToCheck.front();
+                instsToCheck.pop();
+
+                if (StoreInst *SI = dyn_cast<StoreInst>(inst)){
+                    if (
+                        DI.depends(SI, load, true) &&
+                        isNegativeDistance(L1, L2, SE, *SI, *load)
+                    ) return true;
+                } else if (
+                    GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(inst)
+                ) {
+                    for (User *gep_user : GEP->users()) {
+                        instsToCheck.push(gep_user);
+                    }
+                }
+            }
         }
     }
 
@@ -654,8 +678,28 @@ void fuseHeader(BasicBlock *l1Header, BasicBlock *l2Header, BasicBlock *l1First)
     if (LoopFusionVerbose) {
         errs() << "Erasing L2 header\n";
     }
+
     l2Header->eraseFromParent();
 }
+
+void fuseBodies(BasicBlock *l1Last, BasicBlock *l2First) {
+    Instruction *l1LastTerm = l1Last->getTerminator();
+    std::vector<Instruction*> instsToMove;
+
+    for (Instruction &inst : *l2First) {
+        instsToMove.push_back(&inst);
+    }
+
+    for (Instruction *inst : instsToMove) {
+        inst->moveBefore(l1LastTerm);
+    }
+
+    l2First->replaceAllUsesWith(l1Last);
+
+    l2First->eraseFromParent();
+    l1LastTerm->eraseFromParent();
+}
+
 
 /**
  * @brief Apply loop fusion transformation to merge two loops
@@ -715,7 +759,7 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
         errs() << "Replacing L2 latch with L1 latch\n";
     }
 
-    L2.getLoopPreheader()->replaceAllUsesWith(L1.getLoopPreheader());
+    //L2.getLoopPreheader()->replaceAllUsesWith(L1.getLoopPreheader());
     L2.getLoopLatch()->replaceAllUsesWith(L1.getLoopLatch());
 
     fuseHeader(l1Header, l2Header, l1First);
@@ -723,12 +767,15 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
     if (LoopFusionVerbose) {
         errs() << "Connecting L1 last block to L2 first block\n";
     }
-    inst = BranchInst::Create(l2First, l1Last->getTerminator());
-    l1Last->getTerminator()->eraseFromParent();
+
+    if (l2First == l2Last)  l2Last = l1Last;
+
+    fuseBodies(l1Last, l2First);
 
     if (LoopFusionVerbose) {
         errs() << "Connecting L2 last block to L1 latch\n";
     }
+
     inst = BranchInst::Create(L1.getLoopLatch(), l2Last->getTerminator());
     l2Last->getTerminator()->eraseFromParent();
 
