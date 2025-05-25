@@ -11,9 +11,16 @@
  */
 
 #include "loopFusion.hpp"
-#include <queue>
+
+#define CACHE_LINE_DIM 64 // CACHE LINE dimension in bytes
+#define MIN_TRIP_COUNT 10 // Number of iterations needed for profitable fusion
 
 using namespace llvm;
+
+/* -------------------------------------------------------------------------- */
+/* ----------------------------- DEBUG OPTIONS ----------------------------- */
+/* -------------------------------------------------------------------------- */
+
 
 /**
  * Command line option to enable verbose debug output for the loop fusion pass
@@ -25,6 +32,22 @@ static cl::opt<bool> LoopFusionVerbose(
     ),
     cl::init(false)
 );
+
+/**
+ * Command line option to enable profitability check when applying loop fusion
+ */
+static cl::opt<bool> ProfitabilityCheck(
+    "profitability-check",
+    cl::desc(
+        "Enables profitability check for loop fusion optimization"
+    ),
+    cl::init(false)
+);
+
+/* -------------------------------------------------------------------------- */
+/* --------------------- LOOP FUSION FEASIBILITY CHECK ---------------------- */
+/* -------------------------------------------------------------------------- */
+
 
 /**
  * @brief Get the block to check for adjacency (guard block or preheader)
@@ -174,6 +197,58 @@ const SCEVAddRecExpr* getSCEVAddRec(
     );
 }
 
+bool isSameBase(
+    const SCEVAddRecExpr *inst1_add_rec,
+    const SCEVAddRecExpr *inst2_add_rec,
+    ScalarEvolution &SE
+) {
+    const SCEV *inst1_base = SE.getPointerBase(inst1_add_rec);
+    const SCEV *inst2_base = SE.getPointerBase(inst2_add_rec);
+
+    if (LoopFusionVerbose) {
+        outs() << "   Inst1 Base SCEV: ";
+        if (inst1_base) inst1_base->print(outs());
+        else outs() << "(null)";
+
+        outs() << "\n";
+        outs() << "   Inst2 Base SCEV: ";
+
+        if (inst2_base) inst2_base->print(outs());
+        else outs() << "(null)";
+
+        outs() << "\n";
+    }
+
+    if (inst1_base != inst2_base) {
+        if (LoopFusionVerbose) {
+            outs() << "   Base pointers' SCEVs are different. Returning false (no provable negative distance).\n";
+        }
+
+        if (ProfitabilityCheck) {
+            outs() << "The operation is not profitable\n";
+            outs() << "since the base pointers are different\n";
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+const SCEVConstant *getConstDelta(
+    const SCEV *inst1,
+    const SCEV *inst2,
+    ScalarEvolution &SE
+) {
+    const SCEV *inst_delta = SE.getMinusSCEV(
+        inst1, inst2
+    );
+    const SCEVConstant *const_delta = dyn_cast<SCEVConstant>(inst_delta);
+
+    return const_delta;
+}
+
+
 /**
  * @brief Determines if a negative memory access distance might exist between
  * the starting memory addresses of two instructions, `inst1` and `inst2`.
@@ -252,32 +327,14 @@ bool isNegativeDistance(
         return true;
     }
 
-    const SCEV *inst1_base = SE.getPointerBase(inst1_add_rec);
-    const SCEV *inst2_base = SE.getPointerBase(inst2_add_rec);
-
-    if (LoopFusionVerbose) {
-        outs() << "   Inst1 Base SCEV: ";
-        if (inst1_base) inst1_base->print(outs());
-        else outs() << "(null)";
-
-        outs() << "\n";
-        outs() << "   Inst2 Base SCEV: ";
-
-        if (inst2_base) inst2_base->print(outs());
-        else outs() << "(null)";
-
-        outs() << "\n";
-    }
-
-    if (inst1_base != inst2_base) {
-        if (LoopFusionVerbose) {
-            outs() << "   Base pointers' SCEVs are different. Returning false (no provable negative distance).\n";
-        }
-        return false;
-    }
+    if (!isSameBase(inst1_add_rec, inst2_add_rec, SE)) return false;
 
     const SCEV *start_inst1 = inst1_add_rec->getStart();
     const SCEV *start_inst2 = inst2_add_rec->getStart();
+
+    const SCEVConstant *const_delta = getConstDelta(
+        start_inst1, start_inst2, SE
+    );
 
     if (LoopFusionVerbose) {
         outs() << "   Start SCEV for Inst1: ";
@@ -293,31 +350,20 @@ bool isNegativeDistance(
         outs() << "\n";
     }
 
-    const SCEV *inst_delta = SE.getMinusSCEV(
-        start_inst1, start_inst2
-    );
-    const SCEVConstant *const_delta = dyn_cast<SCEVConstant>(inst_delta);
-
     const SCEV *step_inst1 = inst1_add_rec->getStepRecurrence(SE);
     const SCEV *step_inst2 = inst2_add_rec->getStepRecurrence(SE);
 
-    const SCEV *step_delta = SE.getMinusSCEV(
-        step_inst1, step_inst2
+    const SCEVConstant *const_step_delta = getConstDelta(
+        step_inst1, step_inst2, SE
     );
-    const SCEVConstant *const_step_delta = dyn_cast<SCEVConstant>(step_delta);
-
-
-    if (LoopFusionVerbose) {
-        outs() << "   Delta SCEV (start_inst1 - start_inst2): ";
-
-        if (inst_delta) inst_delta->print(outs());
-        else outs() << "(null)";
-
-        outs() << "\n";
-    }
 
     if (const_delta && const_step_delta) {
         if (LoopFusionVerbose) {
+            outs() << "   Delta SCEV (start_inst1 - start_inst2): ";
+            if (const_delta) const_delta->print(outs());
+            else outs() << "(null)";
+            outs() << "\n";
+
             outs() << "   Both deltas are constants:\n";
 
             outs() << "   ";
@@ -333,13 +379,13 @@ bool isNegativeDistance(
 
         bool isBaseDistanceNegative = SE.isKnownPredicate(
             ICmpInst::ICMP_SLT,
-            inst_delta,
+            const_delta,
             SE.getZero(const_delta->getType())
         );
 
         bool isStepDistanceNegative = SE.isKnownPredicate(
             ICmpInst::ICMP_SLT,
-            step_delta,
+            const_step_delta,
             SE.getZero(const_step_delta->getType())
         );
 
@@ -356,6 +402,7 @@ bool isNegativeDistance(
                     "false (distance non-negative)") << ".\n";
         }
 
+
         return isBaseDistanceNegative || isStepDistanceNegative;
     }
 
@@ -370,7 +417,7 @@ bool isNegativeDistance(
  * @param storesVec Vector where store instructions will be placed
  * @param loadsVec Vector wheere load instructions will be placed
  */
-void fillLoadStoreVectors(
+void fillLoadVector(
     Loop &L,
     std::vector<LoadInst*> &loadsVec
 ) {
@@ -383,6 +430,24 @@ void fillLoadStoreVectors(
     }
 }
 
+void fillMemoryVector(
+    Loop &L,
+    std::vector<Instruction*> &memoryInsts
+) {
+    for (BasicBlock *BB: L.getBlocks()) {
+        for (Instruction &inst : *BB) {
+            if (StoreInst *SI = dyn_cast<StoreInst>(&inst)) {
+                memoryInsts.push_back(SI);
+            }
+            if (LoadInst *LI = dyn_cast<LoadInst>(&inst)) {
+                memoryInsts.push_back(LI);
+            }
+        }
+    }
+}
+
+
+
 Value *getRealPtrValue(LoadInst *load) {
     Value *ptr = load->getPointerOperand();
 
@@ -392,6 +457,29 @@ Value *getRealPtrValue(LoadInst *load) {
     }
 
     return ptr;
+}
+
+// Useful when there are nested loops
+void getPtrStores(Value *ptr, std::vector<StoreInst*> &stores) {
+    for (User *user : ptr->users()) {
+        std::queue<Value*> instsToCheck;
+        instsToCheck.push(user);
+
+        while (!instsToCheck.empty()) {
+            Value *inst = instsToCheck.front();
+            instsToCheck.pop();
+
+            if (StoreInst *SI = dyn_cast<StoreInst>(inst)){
+                stores.push_back(SI);
+            } else if (
+                GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(inst)
+            ) {
+                for (User *gep_user : GEP->users()) {
+                    instsToCheck.push(gep_user);
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -411,38 +499,169 @@ bool areDependent(
 ) {
     std::vector<LoadInst*> l2LoadInsts;
 
-    fillLoadStoreVectors(L2, l2LoadInsts);
+    fillLoadVector(L2, l2LoadInsts);
 
+    if (ProfitabilityCheck && l2LoadInsts.size() == 0) {
+        outs() << "The loop fusion operation is not profitable\n";
+        outs() << "because there isn't any type of dependency\n";
+        outs() << "between the two loops";
+    }
+
+    std::vector<StoreInst*> stores;
     for (LoadInst *load : l2LoadInsts) {
         Value *realPtrOp = getRealPtrValue(load);
+        getPtrStores(realPtrOp, stores);
 
-        for (User *user : realPtrOp->users()) {
-            if (!L1.contains(dyn_cast<Instruction>(user))) continue;
+        for (Instruction *store : stores) {
+            if (
+                L1.contains(dyn_cast<Instruction>(store)) &&
+                DI.depends(store, load, true) &&
+                isNegativeDistance(L1, L2, SE, *store, *load)
+            ) {
+                return true;
+            }
+        }
 
-            std::queue<Value*> instsToCheck;
-            instsToCheck.push(user);
+        stores = {};
+    }
 
-            while (!instsToCheck.empty()) {
-                Value *inst = instsToCheck.front();
-                instsToCheck.pop();
+    return false;
+}
 
-                if (StoreInst *SI = dyn_cast<StoreInst>(inst)){
-                    if (
-                        DI.depends(SI, load, true) &&
-                        isNegativeDistance(L1, L2, SE, *SI, *load)
-                    ) return true;
-                } else if (
-                    GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(inst)
-                ) {
-                    for (User *gep_user : GEP->users()) {
-                        instsToCheck.push(gep_user);
+
+bool canExploitSpatialLocality(
+    const SCEVConstant *base_delta,
+    const SCEVConstant *stride_delta
+) {
+    if (!base_delta || !stride_delta) {
+        outs() << "  Profitability/SpatialLocality: Base or stride delta is null, cannot determine spatial locality.\n";
+
+        return false;
+    }
+
+    int base_delta_value = base_delta->getAPInt().getSExtValue();
+    int stride_delta_value = stride_delta->getAPInt().getSExtValue();
+
+    bool canExploit = (base_delta_value + stride_delta_value <= CACHE_LINE_DIM);
+
+    outs() << "  Profitability/SpatialLocality: Base Delta = " << base_delta_value
+            << ", Stride Delta = " << stride_delta_value
+            << ", Sum = " << (base_delta_value + stride_delta_value)
+            << ", Cache Line Dim = " << CACHE_LINE_DIM << "\n";
+
+    outs() << "  Profitability/SpatialLocality: Can exploit? " << (canExploit ? "Yes" : "No") << "\n";
+
+    return canExploit;
+}
+
+int checkSpatialLocalityUsage(
+    Loop &L1,
+    Loop &L2,
+    std::vector<Instruction*> &l1Insts, // Changed to pass by reference
+    std::vector<Instruction*> &l2Insts, // Changed to pass by reference
+    ScalarEvolution &SE,
+    DependenceInfo &DI
+) {
+    int profitability_score = 0;
+
+
+    outs() << "Profitability: Checking spatial locality usage between L1 and L2 memory instructions.\n";
+
+    outs() << "  L1 Memory Instructions (" << l1Insts.size() << "):\n";
+    for (Instruction* inst : l1Insts) outs() << "    " << *inst << "\n";
+
+    outs() << "  L2 Memory Instructions (" << l2Insts.size() << "):\n";
+    for (Instruction* inst : l2Insts) outs() << "    " << *inst << "\n";
+
+    for (Instruction *instl1 : l1Insts) {
+        for (Instruction *instl2 : l2Insts) {
+
+            outs() << "  Profitability/SpatialLocality: Checking pair: \n    L1 Inst: " << *instl1 << "\n    L2 Inst: " << *instl2 << "\n";
+
+            if (DI.depends(instl1, instl2, true)) {
+                outs() << "  Profitability/SpatialLocality: Dependence reported by DI.depends(). Analyzing access patterns.\n";
+
+                const SCEVAddRecExpr *inst1_add_rec = getSCEVAddRec(*instl1, L1, SE);
+                const SCEVAddRecExpr *inst2_add_rec = getSCEVAddRec(*instl2, L2, SE);
+
+                outs() << "    Inst1 AddRec: ";
+                if (inst1_add_rec) inst1_add_rec->print(outs()); else outs() << "(null)";
+                outs() << "\n    Inst2 AddRec: ";
+                if (inst2_add_rec) inst2_add_rec->print(outs()); else outs() << "(null)";
+                outs() << "\n";
+
+                if (inst1_add_rec && inst2_add_rec) {
+                    if (!isSameBase(inst1_add_rec, inst2_add_rec, SE)) {
+                        outs() << "    Different base pointers for SCEV. Cannot assess spatial locality for this pair based on offsets.\n";
+
+                         continue; // Skip if bases are different for this specific profitability heuristic
                     }
+
+                    const SCEV *start_inst1 = inst1_add_rec->getStart();
+                    const SCEV *start_inst2 = inst2_add_rec->getStart();
+                    const SCEVConstant *base_delta = getConstDelta(start_inst1, start_inst2, SE);
+
+                    const SCEV *step_inst1 = inst1_add_rec->getStepRecurrence(SE);
+                    const SCEV *step_inst2 = inst2_add_rec->getStepRecurrence(SE);
+                    const SCEVConstant *stride_delta = getConstDelta(step_inst1, step_inst2, SE);
+
+                    if (canExploitSpatialLocality(base_delta, stride_delta)) {
+                        profitability_score++;
+
+                        outs() << "  Profitability/SpatialLocality: Spatial locality exploitable for this pair. Score incremented to: " << profitability_score << "\n";
+                    }
+                } else {
+                    outs() << "    Could not get SCEVAddRecExpr for one or both instructions. Cannot assess spatial locality for this pair.\n";
                 }
+            } else {
+                outs() << "  Profitability/SpatialLocality: No dependence reported by DI.depends() for this pair. No direct spatial locality benefit counted here.\n";
             }
         }
     }
 
-    return false;
+    outs() << "Profitability: Spatial locality usage score: " << profitability_score << "\n";
+
+    return profitability_score;
+}
+
+bool isProfitable(
+    Loop &L1,
+    Loop &L2,
+    std::vector<Instruction*> &l1MemoryInsts,
+    std::vector<Instruction*> &l2MemoryInsts,
+    ScalarEvolution &SE,
+    DependenceInfo &DI
+) {
+    outs() << "--- Starting Profitability Analysis ---\n";
+
+    outs() << "L1 Header: "; L1.getHeader()->printAsOperand(outs(), false); outs() << "\n";
+    outs() << "L2 Header: "; L2.getHeader()->printAsOperand(outs(), false); outs() << "\n";
+
+    int profitability_score = 0;
+
+    // 1. Check spatial locality usage
+    int spatial_locality_score = checkSpatialLocalityUsage(L1, L2, l1MemoryInsts, l2MemoryInsts, SE, DI);
+    profitability_score += spatial_locality_score;
+
+    outs() << "Profitability: Score after spatial locality check: " << profitability_score << "\n";
+
+    // 2. Check trip count
+    unsigned tripCountL1 = SE.getSmallConstantTripCount(&L1);
+    if (tripCountL1 > MIN_TRIP_COUNT) {
+        profitability_score++;
+
+        outs() << "Profitability: L1 trip count (" << tripCountL1 << ") > MIN_TRIP_COUNT (" << MIN_TRIP_COUNT << "). Score incremented.\n";
+    } else {
+        outs() << "Profitability: L1 trip count (" << tripCountL1 << ") <= MIN_TRIP_COUNT (" << MIN_TRIP_COUNT << "). No score for trip count.\n";
+    }
+
+    outs() << "Profitability: Score after trip count check: " << profitability_score << "\n";
+
+    outs() << "Profitability: Final Profitability Score: " << profitability_score << "\n";
+
+    outs() << "--- End of Profitability Analysis (" << (profitability_score > 0 ? "PROFITABLE" : "NOT PROFITABLE") << ") ---\n";
+
+    return profitability_score > 0;
 }
 
 /**
@@ -504,6 +723,10 @@ bool isLoopFusionApplicable(Loop &L1, Loop &L2, ScalarEvolution &SE,
         return true;
 }
 
+/* -------------------------------------------------------------------------- */
+/* ------------------------- LOOP FUSION APPLICATION ------------------------ */
+/* -------------------------------------------------------------------------- */
+
 /**
  * @brief Get the first body block of a loop after the header
  *
@@ -545,6 +768,9 @@ BasicBlock *getLastBodyBlock(Loop &L) {
  * @param L Loop to analyze
  * @return PHINode* Induction variable or nullptr if not found
  */
+
+
+// It can be useful to check that the induction variables are relatable (i.e. they have the same start)
 PHINode* getInductionVariable(Loop &L) {
     BasicBlock *header = L.getHeader();
 
@@ -566,45 +792,6 @@ PHINode* getInductionVariable(Loop &L) {
 }
 
 /**
- * @brief Check if a loop has a preheader block
- *
- * @param L Loop to check
- * @return true If the loop has a preheader
- * @return false Otherwise
- */
-bool hasPreheader(Loop &L) {
-    return L.getLoopPreheader() != nullptr;
-}
-
-/**
- * @brief Remove an unused compare instruction and its associated load instruction
- *
- * Called during loop fusion cleanup to remove redundant instructions.
- *
- * @param inst Compare instruction to remove
- */
-void removeCompareAndLoad(CmpInst *inst) {
-    if (inst->hasNUses(0)) {
-        if (LoopFusionVerbose) {
-            errs() << "Removing unused compare instruction: ";
-            inst->print(errs());
-            errs() << "\n";
-        }
-
-        if (LoadInst *LI = dyn_cast<LoadInst>(inst->getOperand(0))) {
-            if (LoopFusionVerbose) {
-                errs() << "Removing associated load instruction: ";
-                LI->print(errs());
-                errs() << "\n";
-            }
-            LI->eraseFromParent();
-        }
-
-        inst->eraseFromParent();
-    }
-}
-
-/**
  * @brief Fuse two loop headers into a single header
  *
  * Moves instructions from the second loop header to the first loop header
@@ -614,7 +801,8 @@ void removeCompareAndLoad(CmpInst *inst) {
  * @param l2Header Header of the second loop
  * @param l1First First body block of the first loop
  */
-void fuseHeader(BasicBlock *l1Header, BasicBlock *l2Header, BasicBlock *l1First) {
+// Serve per gestire le phi functions
+void movePN(BasicBlock *l1Header, BasicBlock *l2Header, BasicBlock *l2Exit) {
     if (LoopFusionVerbose) {
         errs() << "Fusing headers:\n";
         errs() << "  L1 header: ";
@@ -622,66 +810,61 @@ void fuseHeader(BasicBlock *l1Header, BasicBlock *l2Header, BasicBlock *l1First)
         errs() << "\n  L2 header: ";
         l2Header->printAsOperand(errs(), false);
         errs() << "\n  L1 first body block: ";
-        l1First->printAsOperand(errs(), false);
+        l2Exit->printAsOperand(errs(), false);
         errs() << "\n";
     }
 
     Instruction *l1termInst = l1Header->getTerminator();
     Instruction *l2termInst = l2Header->getTerminator();
 
-    std::vector<Instruction*> instsToMove;
+    std::vector<PHINode*> instsToMove;
 
     for (Instruction &inst : *l2Header) {
-        if (&inst != l2termInst) instsToMove.push_back(&inst);
+        if (PHINode *PN = dyn_cast<PHINode>(&inst)) {
+            instsToMove.push_back(PN);
+        }
     }
 
     if (LoopFusionVerbose) {
         errs() << "Moving " << instsToMove.size() << " instructions from L2 header to L1 header\n";
     }
 
-    for (Instruction *inst : instsToMove) {
-        if (PHINode *PN = dyn_cast<PHINode>(inst)) {
-            if (!PN->hasNUses(0)) {
-                if (LoopFusionVerbose) {
-                    errs() << "  Moving PHI node: ";
-                    PN->print(errs());
-                    errs() << "\n";
-                }
-                PN->moveBefore(l1Header->getFirstNonPHI());
-            }
-        } else if (inst != l2termInst) {
+    for (PHINode *PN : instsToMove) {
+        if (!PN->hasNUses(0)) {
             if (LoopFusionVerbose) {
-                errs() << "  Moving instruction: ";
-                inst->print(errs());
+                errs() << "  Moving PHI node: ";
+                PN->print(errs());
                 errs() << "\n";
             }
-            inst->moveBefore(l1termInst);
+            PN->moveBefore(l1Header->getFirstNonPHI());
+
+
+            // Predecessors are processed in inverse order
+            // This could be done without a for loop by just considering
+            // the loop preheader and the loop latch
+            // however in this function I do not have that information
+            // probably I could change this
+            int pred_idx = 1;
+            for (BasicBlock *BB : predecessors(l1Header)) {
+                PN->setIncomingBlock(pred_idx--, BB);
+            }
         }
     }
 
-    l2termInst->moveAfter(l1termInst);
-    l1termInst->eraseFromParent();
-    l2termInst->setSuccessor(0, l1First);
-
-    std::vector<BasicBlock*> bbToErase;
-
-    for (BasicBlock *BB : predecessors(l2Header)) {
-        if (BB->hasNPredecessors(0)) bbToErase.push_back(BB);
-    }
-
-    if (LoopFusionVerbose && !bbToErase.empty()) {
-        errs() << "Removing " << bbToErase.size() << " unreachable predecessor blocks\n";
-    }
-
-    for (BasicBlock *BB : bbToErase) BB->eraseFromParent();
+    l1termInst->setSuccessor(1, l2Exit);
 
     if (LoopFusionVerbose) {
         errs() << "Erasing L2 header\n";
     }
-
-    l2Header->eraseFromParent();
 }
 
+/**
+ * @brief Helper function for fusing loops bodies
+ *
+ * It fuse the loop bodies by moving all the instructions
+ * from the first block of the second loop to the last
+ * block of the first loop
+ */
 void fuseBodies(BasicBlock *l1Last, BasicBlock *l2First) {
     Instruction *l1LastTerm = l1Last->getTerminator();
     std::vector<Instruction*> instsToMove;
@@ -751,6 +934,7 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
                 errs() << "\n";
             }
             inductionVariable->replaceAllUsesWith(l1InductionVar);
+            inductionVariable->eraseFromParent();
         }
     }
 
@@ -759,10 +943,10 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
         errs() << "Replacing L2 latch with L1 latch\n";
     }
 
-    //L2.getLoopPreheader()->replaceAllUsesWith(L1.getLoopPreheader());
     L2.getLoopLatch()->replaceAllUsesWith(L1.getLoopLatch());
+    L2.getLoopLatch()->eraseFromParent();
 
-    fuseHeader(l1Header, l2Header, l1First);
+    movePN(l1Header, l2Header, l2Exit);
 
     if (LoopFusionVerbose) {
         errs() << "Connecting L1 last block to L2 first block\n";
@@ -782,6 +966,9 @@ void applyLoopFusion(Loop &L1, Loop &L2) {
     if (LoopFusionVerbose) {
         errs() << "Loop fusion completed successfully\n";
     }
+
+    l2Preheader->eraseFromParent();
+    l2Header->eraseFromParent();
 }
 
 /**
@@ -833,8 +1020,6 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
             << F.getName() << "\n";
     }
 
-    bool transformed = false;
-
     DominatorTree *DT = nullptr;
     PostDominatorTree *PDT = nullptr;
     ScalarEvolution *SE = nullptr;
@@ -848,7 +1033,6 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
         isLoopFusionApplied = false;
 
         updateLoopInfo(F, AM, DT, PDT, SE, DI, LI);
-
         SmallVector<Loop*, 4> loops = LI->getLoopsInPreorder();
 
         if (LoopFusionVerbose) {
@@ -856,13 +1040,13 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
         }
 
         for (
-            auto first_it = loops.begin(); first_it != loops.end(); ++first_it
+            auto first_it = loops.begin(); first_it != loops.end() && !isLoopFusionApplied; ++first_it
         ) {
             Loop *L1 = *first_it;
 
             for (
                 auto second_it = std::next(first_it);
-                second_it != loops.end();
+                second_it != loops.end() && !isLoopFusionApplied;
                 ++second_it
             ) {
                 Loop *L2 = *second_it;
@@ -877,6 +1061,25 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
                 }
 
                 if (isLoopFusionApplicable(*L1, *L2, *SE, *DT, *PDT, *DI)) {
+                    if (ProfitabilityCheck) {
+                        outs() << "\n===== Profitability Check for Loop Fusion =====\n";
+                        outs() << "L1 Header: "; L1->getHeader()->printAsOperand(outs(), false); outs() << "\n";
+                        outs() << "L2 Header: "; L2->getHeader()->printAsOperand(outs(), false); outs() << "\n";
+
+                        std::vector<Instruction*> l1MemoryInsts;
+                        std::vector<Instruction*> l2MemoryInsts;
+
+                        fillMemoryVector(*L1, l1MemoryInsts);
+                        fillMemoryVector(*L2, l2MemoryInsts);
+
+                        if (!isProfitable(*L1, *L2, l1MemoryInsts, l2MemoryInsts,  *SE, *DI)) {
+                            outs() << "Profitability Check: Loop fusion deemed NOT PROFITABLE.\n";
+                        } else {
+                            outs() << "Profitability Check: Loop fusion deemed PROFITABLE.\n";
+                        }
+                        outs() << "===== End of Profitability Check =====\n\n";
+                    }
+
                     applyLoopFusion(*L1, *L2);
                     fusionCount++;
 
@@ -885,12 +1088,8 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
                     }
 
                     isLoopFusionApplied = true;
-                    transformed = true;
-                    break;
                 }
             }
-
-            if (isLoopFusionApplied) break;
         }
 
         if (isLoopFusionApplied) {
@@ -908,6 +1107,10 @@ PreservedAnalyses LoopFusion::run(Function &F, FunctionAnalysisManager &AM) {
 
     return PreservedAnalyses::none();
 }
+
+/* -------------------------------------------------------------------------- */
+/* -------------------------- PLUGIN REGISTRATION --------------------------- */
+/* -------------------------------------------------------------------------- */
 
 /**
  * @brief Get plugin registration information for the loop fusion pass
