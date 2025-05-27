@@ -85,6 +85,15 @@ opt -load-pass-plugin=./build/libLoopFusion.so -passes=lf --lf-verbose opt.ll -S
 # (Adjust .so/.dylib as needed)
 ```
 
+**Profitability Check:**
+It is possible to check whether the loop fusion optimization is profitable with the flag `--profitability-check`. Therefore the comamand becomes:
+```bash
+opt -load-pass-plugin=./build/libLoopFusion.so -passes=lf --profitability-check opt.ll -S
+# (Adjust .so/.dylib as needed)
+```
+
+Profitability check is made using two simple heuristics: loop trip count and possible spatial locality exploitation.
+
 ## Example
 
 It is possible to use the example provided in the tests folder. In order to use it you can run the following commands:
