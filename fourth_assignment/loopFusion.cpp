@@ -197,6 +197,12 @@ const SCEVAddRecExpr* getSCEVAddRec(
     );
 }
 
+/**
+    @brief Helper function used to check if two recurrences have the same base
+
+    Extracts each recurrence base and check their equality.
+    Returns true if equal, false otherwise.
+*/
 bool isSameBase(
     const SCEVAddRecExpr *inst1_add_rec,
     const SCEVAddRecExpr *inst2_add_rec,
@@ -235,6 +241,11 @@ bool isSameBase(
     return true;
 }
 
+/**
+    @brief Computes the delta between two SCEV variables.
+
+    @return Returns the delta between the two variables as a SCEVConstant.
+*/
 const SCEVConstant *getConstDelta(
     const SCEV *inst1,
     const SCEV *inst2,
@@ -430,6 +441,9 @@ void fillLoadVector(
     }
 }
 
+/**
+    @brief Helper function used to fill a vector with all memory (load/store) related instructions of a Loop.
+*/
 void fillMemoryVector(
     Loop &L,
     std::vector<Instruction*> &memoryInsts
@@ -446,8 +460,11 @@ void fillMemoryVector(
     }
 }
 
+/**
+    @brief Gets the real pointer to which a LoadInst refers.
 
-
+    If working with arrays or multi-dimensional arrays, GEP instructions can hide the real memory location and, therefore, the object to which we are referring. This function is used when dealing with dependencies between loops.
+*/
 Value *getRealPtrValue(LoadInst *load) {
     Value *ptr = load->getPointerOperand();
 
@@ -459,7 +476,11 @@ Value *getRealPtrValue(LoadInst *load) {
     return ptr;
 }
 
-// Useful when there are nested loops
+/**
+    @brief Gets the stores that use the given pointer.
+
+    As for the loads, the reference of the object were we are storing the value can be hidden by GEP instructions. This function traverses the chain of GEP instructions in order to find the pointer that represent the object, which is the ptr given as an argument of the function.
+*/
 void getPtrStores(Value *ptr, std::vector<StoreInst*> &stores) {
     for (User *user : ptr->users()) {
         std::queue<Value*> instsToCheck;
@@ -528,7 +549,9 @@ bool areDependent(
     return false;
 }
 
-
+/**
+    Function that checks whether two dependent memory instructions can exploit spatial locality. It simply checks if the sum of base and stride deltas are within the dimension of the cache line. The cache line dimension is defined arbitrarily at the beginning of this file.
+*/
 bool canExploitSpatialLocality(
     const SCEVConstant *base_delta,
     const SCEVConstant *stride_delta
@@ -554,6 +577,9 @@ bool canExploitSpatialLocality(
     return canExploit;
 }
 
+/**
+    Iterates over all memory instructions within the two given loops and returns the number of times spatial locality could be used. The returned value is referenced as profitability_score.
+*/
 int checkSpatialLocalityUsage(
     Loop &L1,
     Loop &L2,
@@ -624,6 +650,11 @@ int checkSpatialLocalityUsage(
     return profitability_score;
 }
 
+/**
+    Computes the profitability of loop fusion by considering spatial locality and number of iterations of the two given loops. If the computed score is greater than 0, the optimization is considered profitable and true is returned, otherwise it returns false.
+
+    This way of computing profitability is extremely simple, as it does not consider other elements that could affect profitability. For example, if fusing two loops creates a unique loop that has several accesses to different objects, the operation could not be profitable, since accesses to multiple objects can saturate the cache.
+*/
 bool isProfitable(
     Loop &L1,
     Loop &L2,
