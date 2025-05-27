@@ -25,7 +25,7 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Transforms/Scalar/LoopSimplifyCFG.h"
 
-#include <map>
+#include <queue>
 
 namespace llvm {
     /**
