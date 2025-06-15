@@ -4,6 +4,7 @@ int main(void) {
 
     int a = 0;
     int b = 0;
+    int c = 0;
 
     for (int i = 0; i < 10; i++){
         if (i>3) {
@@ -14,13 +15,13 @@ int main(void) {
     }
 
     for (int i = 0; i < 10; i++) {
-        b++;
+        b = i+1;
     }
 
     for (int i = 0; i < 10; i++) {
-        int c = a + b;
+        c = c + a + b;
     }
 
-    std::cout << a << " " << b << std::endl;
+    std::cout << a << " " << b << " " << c << std::endl;
 
 }
