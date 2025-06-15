@@ -59,6 +59,58 @@ std::set<int> getExpSet(int n) {
     return expSet;
 };
 
+int getRealConstantValue(ConstantInt *C1, ConstantInt *C2, int opCode) {
+    if (!C2) return C1->getSExtValue();
+
+    int c1Value = C1->getSExtValue();
+    int c2Value = C2->getSExtValue();
+
+    std::set<int> checkedValues {-1, 0, 1};
+
+    bool isC1Checked = checkedValues.find(c1Value) != checkedValues.end();
+    bool isC2Checked = checkedValues.find(c2Value) != checkedValues.end();
+
+    if (!isC1Checked && !isC2Checked) return c1Value;
+
+    if (isC1Checked && !isC2Checked) return c1Value;
+    else if(!isC1Checked && isC2Checked) return c2Value;
+    else {
+        if (
+            (c1Value == 0 || c2Value == 0) &&
+            (opCode != Instruction::UDiv || opCode != Instruction::SDiv)
+        ) {
+            return 0;
+        } else if (
+            (c1Value == 1 || c2Value == 1) &&
+            opCode != Instruction::And
+        ) {
+            return 1;
+        } else if (
+            (c1Value == -1 || c2Value == -1) &&
+            opCode == Instruction::And
+        ) {
+            return -1;
+        }
+    }
+
+    return c1Value;
+}
+
+Value* getConstantToReturn(ConstantInt *C1, ConstantInt *C2) {
+    if (!C2) return C1;
+
+    std::set<int> checkedValues {-1, 0, 1};
+
+
+    if (checkedValues.find(C1->getSExtValue()) != checkedValues.end()) {
+        return C2;
+    } else if (checkedValues.find(C2->getSExtValue()) != checkedValues.end()) {
+        return C1;
+    }
+
+    return nullptr;
+}
+
 /**
  * Optimize instructions based on algebraic identities.
  *
@@ -87,24 +139,30 @@ std::set<int> getExpSet(int n) {
 bool algebraicIdentityOptimization(Instruction &inst) {
     Value *LHS = nullptr;
     Value *RHS = nullptr;
-    ConstantInt *C = nullptr;
+    ConstantInt *C1 = nullptr;
+    ConstantInt *C2 = nullptr;
 
     // Matches if the operation is a binary operation
     // I've used this approach instead of the simpler inst.isBinaryOp() because
-    // this allow to easily separate the constant and the value, avoiding further checks on the types
+    // this allow to easily separate the constant and the value,
+    // avoiding further checks on the types.
     if (
-        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_ConstantInt(C))) ||
-        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(LHS))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C1), PatternMatch::m_ConstantInt(C2))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_ConstantInt(C1))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_ConstantInt(C1))) ||
+        PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C1), PatternMatch::m_Value(LHS))) ||
         PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(LHS), PatternMatch::m_Value(RHS)))
     ) {
         unsigned int opCode = inst.getOpcode();  // Operation code (Add, Sub, etc.)
 
-        int64_t constantValue = 0;
-        if (C) constantValue = C->getSExtValue();
+        int64_t constantValue = getRealConstantValue(C1, C2, opCode);
+
         Value *newValue = nullptr;  // Will hold the simplified value if optimization applies
 
         std::string identity = "";  // Stores the description of the applied identity for verbose output
 
+        // These maps are used in order to simplify the check of the opCode and
+        // to reuse the same code with different types of operations.
         static const std::vector<int> zeroConstantOps = {
             Instruction::Add,
             Instruction::Sub,
@@ -121,19 +179,49 @@ bool algebraicIdentityOptimization(Instruction &inst) {
             Instruction::SDiv,
         };
 
+        // I've modeled this if statements to catch every possible case
+        // of algebraic identity while maintaining the total number
+        // branches the lowest possible.
+        //
+        // The first if models all the kind of algebraic identities,
+        // where the resulting value is 0
+        //
+        // The second if models all the identities where the value does not
+        // change
+        //
+        // The third if models all the cases when the results is 1
         if (
-            (C && constantValue == 0 && opCode == Instruction::Mul) ||
-            ((LHS == RHS) && (opCode == Instruction::Sub || opCode == Instruction::Xor))
+            (C1 && constantValue == 0 && opCode == Instruction::Mul) ||
+            (
+                ( (LHS && RHS && LHS == RHS) || C1 == C2) &&
+                (opCode == Instruction::Sub || opCode == Instruction::Xor)
+            )
         ) {
             newValue = Constant::getNullValue(inst.getType());
         } else if (
-            !(C && opCode == Instruction::Sub && C == inst.getOperand(0)) && // if the instruction is of the type y = 0 - x it should not be applied
-            ((C && (constantValue == 0 || constantValue == -1) && std::find(zeroConstantOps.begin(), zeroConstantOps.end(), opCode) != zeroConstantOps.end()) ||
-            (C && constantValue == 1 && std::find(oneConstantOps.begin(), oneConstantOps.end(), opCode) != oneConstantOps.end()) ||
-            ((LHS == RHS) && (opCode == Instruction::And || opCode == Instruction::Or)))
+            !(C1 && opCode == Instruction::Sub && C1 == inst.getOperand(0)) &&
+            // if the instruction is of the type y = 0 - x it should not be applied
+            (
+                (
+                    C1 && (constantValue == 0 || constantValue == -1) &&
+                    std::find(zeroConstantOps.begin(), zeroConstantOps.end(), opCode) != zeroConstantOps.end()
+                ) ||
+                (
+                    C1 &&
+                    constantValue == 1 &&
+                    std::find(oneConstantOps.begin(), oneConstantOps.end(), opCode) != oneConstantOps.end()
+                ) ||
+                (
+                    (LHS == RHS) &&
+                    (opCode == Instruction::And || opCode == Instruction::Or)
+                )
+            )
         ) {
-            newValue = LHS;
-        } else if ((LHS == RHS) && (opCode == Instruction::SDiv || opCode == Instruction::UDiv)) {
+            newValue = LHS ? LHS : getConstantToReturn(C1, C2);
+        } else if (
+            (LHS == RHS) &&
+            (opCode == Instruction::SDiv || opCode == Instruction::UDiv)
+        ) {
                 newValue = ConstantInt::get(inst.getType(), 1);
         } else {
             return false;
@@ -161,18 +249,20 @@ bool algebraicIdentityOptimization(Instruction &inst) {
                 {Instruction::UDiv, "x / 1 = x"}
             };
 
-            if (C && C->getSExtValue() == 0 && opCode == Instruction::Mul) {
+            if (C1 && constantValue == 0 && opCode == Instruction::Mul) {
                 identity = "x * 0 = 0";
-            } else if (C && C->getSExtValue() == -1 && opCode == Instruction::And) {
+            } else if (C1 && constantValue == -1 && opCode == Instruction::And) {
                 identity = "x & -1 = x";
-            } else if (C) {
+            } else if (C1 == C2) {
+                identity = nonConstantIdentities.at(opCode);
+            } else if (C1) {
                 identity = constantIdentities.at(opCode);
             } else {
                 identity = nonConstantIdentities.at(opCode);
             }
         }
 
-        // If we found an optimization, apply it
+        // If an optimization is found, we apply it
         if (newValue) {
             if (LocalOptsVerbose) {
                 outs() << "Applying Algebraic identity optimization on instruction: " << inst << "\n";
@@ -190,17 +280,21 @@ bool algebraicIdentityOptimization(Instruction &inst) {
 }
 
 /**
- * Apply strength reduction optimizations to convert expensive operations to cheaper ones.
+ * Apply strength reduction optimizations to convert expensive operations
+ * to cheaper ones.
  *
- * Strength reduction replaces computationally expensive operations with equivalent but
- * more efficient sequences. This optimization targets:
+ * Strength reduction replaces computationally expensive operations
+ * with equivalent but more efficient sequences.
+ *
+ * This optimization targets:
  *
  * 1. Multiplication by power of 2:
  *    - x * 2^n becomes x << n (left shift is faster than multiplication)
  *
  * 2. Multiplication by specific patterns:
- *    - For constants like 2^n-1 (e.g., 7, 15): x * c becomes (x << n) - x
- *    - For constants with few set bits: decomposes multiplication into a series of shifts and adds
+ *    - For constants like 2^n - 1 (e.g., 7, 15): x * c becomes (x << n) - x
+ *    - For constants with few set bits: decomposes multiplication
+ *      into a series of shifts and adds
  *      (e.g., x * 10 becomes (x << 3) + (x << 1) since 10 = 2^3 + 2^1)
  *
  * 3. Division by power of 2:
@@ -208,7 +302,8 @@ bool algebraicIdentityOptimization(Instruction &inst) {
  *
  * Implementation details:
  * - Uses getExpSet() to decompose constants into their binary components
- * - For constants with all bits set (2^n-1), applies the (x << n) - x optimization
+ * - For constants with all bits set (2^n - 1),
+ *   applies the (x << n) - x optimization
  * - For constants with few set bits (<=3), creates a sequence of shift and add operations
  * - Handles negative constants by negating the final result
  * - Each new instruction is inserted in the proper position in the IR
@@ -265,9 +360,10 @@ bool strengthReduction(Instruction &inst) {
                 // I've decided to not apply strength reduction optimization if the number of shifts to add is more than 3.
                 // Even though the mul instruction is a multi-cycle instruction, replacing it with multiple shifts and adds can
                 // become more expensive than the mul itself.
-                // My choice is arbitrary and it is based on simple web researchs, therefore
-                // I don't consider it as the perfect solution and it, perharps, could be improved; however I consider it a good trade-off
+                // My choice is arbitrary and it is based on simple web research, therefore
+                // I don't consider it as the perfect solution and it, perhaps, could be improved; however I consider it a good trade-off
 
+                // Check this
                 type = "x * c = x * (2^c1 + 2^c2 ...) ==> x << c1 + x << c2 ...";
                 for (int exp : expSet) {
                     Instruction *newInstShift = BinaryOperator::Create(
@@ -292,9 +388,11 @@ bool strengthReduction(Instruction &inst) {
             } else {
                 return false;
             }
-       }
-        // Handle division operations
-        else if (opCode == Instruction::SDiv || opCode == Instruction::UDiv) {
+        } else if (
+            opCode == Instruction::SDiv ||
+            opCode == Instruction::UDiv
+        ) {
+            // Handle division operations
             if ((constantValue & (constantValue - 1)) == 0) {
                 // If divisor is a power of 2, replace division with right shift
                 // x / 2^n => x >> n
@@ -303,6 +401,8 @@ bool strengthReduction(Instruction &inst) {
                     Instruction::LShr, V, ConstantInt::get(inst.getType(), log2(constantValue)));
                 newInst->insertAfter(&inst);
             }
+        } else {
+            return false;
         }
 
         if (isNegative) {
@@ -362,6 +462,7 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
     Value *V = nullptr;
     ConstantInt *C = nullptr;
 
+
     if (
         PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_Value(V), PatternMatch::m_ConstantInt(C))) ||
         PatternMatch::match(&inst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(C), PatternMatch::m_Value(V)))
@@ -379,12 +480,16 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
         static const std::map<int, int> opMap {
             {Instruction::Add, Instruction::Sub},
             {Instruction::Sub, Instruction::Add},
-            {Instruction::Shl, Instruction::LShr},
-            {Instruction::LShr, Instruction::Shl},
+            {Instruction::Shl, Instruction::AShr},
+            {Instruction::AShr, Instruction::Shl},
             {Instruction::Mul, Instruction::SDiv},
             {Instruction::UDiv, Instruction::Mul},
-            {Instruction::SDiv, Instruction::Mul}
+            {Instruction::SDiv, Instruction::Mul},
+            {Instruction::LShr, Instruction::Shl}
         };
+
+        //inst.print(outs());
+
 
         std::queue<Instruction*> worklist;
         worklist.push(varInst);
@@ -396,14 +501,30 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
         ConstantInt* varC = nullptr;
         bool canOptimize = false;
 
+        outs() << "I'm working with: ";
+        inst.print(outs());
+        outs() << "\n\n";
+
         while (!worklist.empty()) {
             varInst = worklist.front();
             worklist.pop();
             int varOpcode = varInst->getOpcode();
 
             if (
-                (PatternMatch::match(varInst, PatternMatch::m_BinOp(PatternMatch::m_Value(varV), PatternMatch::m_ConstantInt(varC))) ||
-                PatternMatch::match(varInst, PatternMatch::m_BinOp(PatternMatch::m_ConstantInt(varC), PatternMatch::m_Value(varV)))) &&
+                (
+                    PatternMatch::match(
+                        varInst,
+                        PatternMatch::m_BinOp(
+                            PatternMatch::m_Value(varV), PatternMatch::m_ConstantInt(varC)
+                        )
+                    ) ||
+                    PatternMatch::match(
+                        varInst,
+                        PatternMatch::m_BinOp(
+                            PatternMatch::m_ConstantInt(varC), PatternMatch::m_Value(varV)
+                        )
+                    )
+                ) &&
                 (opMap.at(opCode) == varOpcode || opCode == varOpcode)
             ) {
                 bool areDiscordant = false;
@@ -425,6 +546,10 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
                     outs() << "Found potential inverse operation with constant: " << varC->getSExtValue() << "\n";
                 }
 
+                outs() << "Potential instruction: ";
+                varInst->print(outs());
+                outs() << "\n\n";
+
                 int64_t temp = 0;
                 int64_t rem = 1;
 
@@ -443,6 +568,8 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
                         temp = constantValue - varC->getSExtValue();
                     }
                 }
+
+                outs() << "This is temp value: " << temp << "\n\n";
 
                 if (
                     temp == 0 ||
@@ -482,13 +609,15 @@ bool multiInstructionOptimization(Instruction &inst, std::vector<Instruction*> &
                 if (inst->hasNUses(1)) {
                     instructionsToRemove.push_back(inst);
                 } else {
-                    bool canRemove = false;
+                    bool canRemove = true;
 
+                    // We can remove the instruction if all its uses
+                    // can be removed
                     for (User *user : inst->users()) {
-                        if (user == inst ||
-                            find(instructionsToRemove.begin(), instructionsToRemove.end(), user) != instructionsToRemove.end()
+                        if (
+                            find(instructionsToRemove.begin(), instructionsToRemove.end(), user) == instructionsToRemove.end()
                         ) {
-                            canRemove = true;
+                            canRemove = false;
                         }
                     }
 
