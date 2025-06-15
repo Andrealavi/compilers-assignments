@@ -64,10 +64,23 @@ BasicBlock* getBlockToCheck(Loop &L) {
 }
 
 /**
+ * @brief Helper function used to check whether guard branch instructions
+ * have the same condition
+ */
+bool areConditionsEquivalent(BranchInst *l1GuardCond, BranchInst *l2GuardCond) {
+    CmpInst *l1CmpInst = dyn_cast<CmpInst>(l1GuardCond->getCondition());
+    CmpInst *l2CmpInst = dyn_cast<CmpInst>(l2GuardCond->getCondition());
+
+    return l1CmpInst->isIdenticalTo(l2CmpInst);
+}
+
+/**
  * @brief Determine if two loops are adjacent in the control flow graph
  *
  * Checks if the exit block of the first loop is the entry block of the second loop.
  * This is a necessary condition for loop fusion.
+ *
+ * If Loop are guarded it returns true if both loops have the same condition
  *
  * @param L1 First loop
  * @param L2 Second loop
@@ -78,14 +91,29 @@ bool areAdjacents(Loop &L1, Loop &L2) {
     BasicBlock *L2Entry = getBlockToCheck(L2);
     BasicBlock *L1Exit = nullptr;
 
+    if (LoopFusionVerbose) errs() << "Checking if loops are adjacent:\n";
+
     if (L1.isGuarded()) {
+        if (
+            L2.isGuarded() &&
+            !areConditionsEquivalent(
+                L1.getLoopGuardBranch(), L2.getLoopGuardBranch()
+            )
+        ) {
+            if (LoopFusionVerbose) {
+                errs() << "Both loop are guarded and the guard condition ";
+                errs() << "is not the same - fusion not possible";
+            }
+
+            return false;
+        }
+
         L1Exit = dyn_cast<BasicBlock>(L1.getLoopGuardBranch()->getOperand(1));
     } else {
         L1Exit = L1.getExitBlock();
     }
 
     if (LoopFusionVerbose) {
-        errs() << "Checking if loops are adjacent:\n";
         errs() << "  L1 exit block: ";
         if (L1Exit)
             L1Exit->printAsOperand(errs(), false);
@@ -117,15 +145,46 @@ bool areAdjacents(Loop &L1, Loop &L2) {
  * @return false Otherwise
  */
 bool areCFE(Loop &L1, Loop &L2, DominatorTree &DT, PostDominatorTree &PDT) {
-    bool result = DT.dominates(L1.getHeader(), L2.getHeader()) &&
-        PDT.dominates(L2.getHeader(), L1.getHeader());
+    bool result;
+
+    if (LoopFusionVerbose) errs() << "Checking control flow equivalence:\n";
+
+    /*
+     * If both loops are guarded we have to check the guard conditions
+     * dominate and postdominate each other, otherwise we have to check
+     * that conditions using loops
+     */
+    if (L1.isGuarded() && L2.isGuarded()) {
+        BasicBlock *l1GuardBlock = L1.getLoopGuardBranch()->getParent();
+        BasicBlock *l2GuardBlock = L2.getLoopGuardBranch()->getParent();
+
+        result = DT.dominates(l1GuardBlock, l2GuardBlock) &&
+            PDT.dominates(l2GuardBlock, l1GuardBlock);
+
+        if (LoopFusionVerbose) {
+            errs() << "  Both loops are guarded\n";
+            errs() << "  L1 guard block dominates L2 header: "
+                   << (DT.dominates(l1GuardBlock, l2GuardBlock)
+                       ? "Yes" : "No") << "\n";
+            errs() << "  L2 guard block post-dominates L1 header: "
+                   << (PDT.dominates(l2GuardBlock, l1GuardBlock)
+                       ? "Yes" : "No") << "\n";
+        }
+    } else {
+        result = DT.dominates(L1.getHeader(), L2.getHeader()) &&
+            PDT.dominates(L2.getHeader(), L1.getHeader());
+
+        if (LoopFusionVerbose) {
+            errs() << "  L1 header dominates L2 header: "
+                   << (DT.dominates(L1.getHeader(), L2.getHeader())
+                       ? "Yes" : "No") << "\n";
+            errs() << "  L2 header post-dominates L1 header: "
+                   << (PDT.dominates(L2.getHeader(), L1.getHeader())
+                       ? "Yes" : "No") << "\n";
+        }
+    }
 
     if (LoopFusionVerbose) {
-        errs() << "Checking control flow equivalence:\n";
-        errs() << "  L1 header dominates L2 header: "
-               << (DT.dominates(L1.getHeader(), L2.getHeader()) ? "Yes" : "No") << "\n";
-        errs() << "  L2 header post-dominates L1 header: "
-               << (PDT.dominates(L2.getHeader(), L1.getHeader()) ? "Yes" : "No") << "\n";
         errs() << "  CFE result: " << (result ? "Yes" : "No") << "\n";
     }
 
@@ -504,10 +563,48 @@ void getPtrStores(Value *ptr, std::vector<StoreInst*> &stores) {
 }
 
 /**
+ * @brief Check if there is a negative distance dependence between the scalars
+ * used in the loops
+ *
+ * It specifically checks for PHINodes used as operands of the operations
+ * in the second loop, since only PHINodes (whose value changes across loop iterations)
+ * can cause problems when loop fusion is applied
+ *
+ * @param L1 First Loop
+ * @param L2 Second Loop
+ */
+bool isNegativeDistanceScalar(Loop &L1, Loop &L2) {
+    if (LoopFusionVerbose) {
+        errs() << "Checking Scalars negative distance: \n";
+    }
+
+    for (BasicBlock *BB : L2.getBlocks()) {
+        for (Instruction &inst : *BB) {
+            for (Use &operand : inst.operands()) {
+                if (PHINode *PN = dyn_cast<PHINode>(operand)) {
+                    if (L1.contains(PN)) {
+                        if (LoopFusionVerbose) {
+                            errs() << "Found a negative scalar dependency\n";
+                        }
+
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
  * @brief Check if a load instruction depends on any of the store instructions
  *
  * Uses DependenceInfo to determine if there's a dependence between the load
  * and any of the stores, which would prevent fusion.
+ *
+ * It also checks if there are dependencies related to scalar values across
+ * loops
  *
  * @param inst Load instruction to check
  * @param storeInsts Vector of store instructions to check against
@@ -545,6 +642,8 @@ bool areDependent(
 
         stores = {};
     }
+
+    if (isNegativeDistanceScalar(L1, L2)) return true;
 
     return false;
 }
@@ -761,14 +860,19 @@ bool isLoopFusionApplicable(Loop &L1, Loop &L2, ScalarEvolution &SE,
 /**
  * @brief Get the first body block of a loop after the header
  *
+ * If the loop is rotated (usually it is when loop is guarded) the first block
+ * of the body corresponds to the loop header.
+ *
  * @param L Loop to analyze
  * @return BasicBlock* First body block or nullptr if not found
  */
 BasicBlock *getFirstBodyBlock(Loop &L) {
-    BasicBlock *BB = L.getHeader();
+    BasicBlock *header = L.getHeader();
 
-    for (BasicBlock *succ : successors(BB)) {
-        if (L.contains(succ) && succ != BB) return succ;
+    if (!L.isLoopExiting(header)) return header;
+
+    for (BasicBlock *succ : successors(header)) {
+        if (L.contains(succ) && succ != header) return succ;
     }
 
     return nullptr;
@@ -803,18 +907,34 @@ BasicBlock *getLastBodyBlock(Loop &L) {
 
 // It can be useful to check that the induction variables are relatable (i.e. they have the same start)
 PHINode* getInductionVariable(Loop &L) {
+    BasicBlock *exitingBlock = L.getExitingBlock();
     BasicBlock *header = L.getHeader();
 
     for (Instruction &inst : *header) {
         if (PHINode *PN = dyn_cast<PHINode>(&inst)) {
             for (User *user : PN->users()) {
-                if (CmpInst *CI = dyn_cast<CmpInst>(user)) {
-                    for (User *cmpUser : CI->users()) {
-                        if (BranchInst *BI = dyn_cast<BranchInst>(cmpUser)) {
-                            if (BI->isConditional()) return PN;
+                if (exitingBlock == header) {
+                    if (CmpInst *CI = dyn_cast<CmpInst>(user)) {
+                        for (User *cmpUser : CI->users()) {
+                            if (BranchInst *BI = dyn_cast<BranchInst>(cmpUser)) {
+                                if (BI->isConditional()) return PN;
+                            }
+                        }
+                    }
+                } else {
+                    if (Instruction *I = dyn_cast<Instruction>(user)) {
+                        for (User *iUser : I->users()) {
+                            if (CmpInst *CI = dyn_cast<CmpInst>(iUser)) {
+                                for (User *cmpUser : CI->users()) {
+                                    if (BranchInst *BI = dyn_cast<BranchInst>(cmpUser)) {
+                                        if (BI->isConditional()) return PN;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+
             }
         }
     }
@@ -914,6 +1034,18 @@ void fuseBodies(BasicBlock *l1Last, BasicBlock *l2First) {
     l1LastTerm->eraseFromParent();
 }
 
+bool areNestedLoops(BasicBlock *l1Last, BasicBlock *l2First) {
+    if (l1Last->size() == 1 && l2First->size() == 1) {
+        if (
+            isa<BranchInst>(l1Last->getTerminator()) &&
+            isa<BranchInst>(l2First->getTerminator())
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 /**
  * @brief Apply loop fusion transformation to merge two loops
@@ -928,78 +1060,63 @@ void fuseBodies(BasicBlock *l1Last, BasicBlock *l2First) {
  * @param L2 Second loop
  */
 void applyLoopFusion(Loop &L1, Loop &L2) {
-    if (LoopFusionVerbose) {
-        errs() << "\n===== Applying loop fusion =====\n";
-        errs() << "L1 header: ";
-        L1.getHeader()->printAsOperand(errs(), false);
-        errs() << "\nL2 header: ";
-        L2.getHeader()->printAsOperand(errs(), false);
-        errs() << "\n";
-    }
+    if (LoopFusionVerbose) errs() << "Applying Loop Fusion: ";
 
-    BasicBlock *l1First = getFirstBodyBlock(L1);
-    BasicBlock *l1Last = getLastBodyBlock(L1);
-
-    BasicBlock *l2First = getFirstBodyBlock(L2);
-    BasicBlock *l2Last = getLastBodyBlock(L2);
-
-    BasicBlock *l1Header = L1.getHeader();
+    BasicBlock *l1LastBlock = getLastBodyBlock(L1);
+    BasicBlock *l1ExitBlock = L1.getExitBlock();
+    BasicBlock *exitingBlock = L1.getExitingBlock();
 
     BasicBlock *l2Preheader = L2.getLoopPreheader();
     BasicBlock *l2Header = L2.getHeader();
-    BasicBlock *l2Exit = L2.getExitBlock();
+    BasicBlock *l2FirstBlock = getFirstBodyBlock(L2);
 
-    BranchInst *inst = nullptr;
-
-    PHINode *inductionVariable = getInductionVariable(L2);
-    if (inductionVariable) {
-        PHINode *l1InductionVar = getInductionVariable(L1);
-
-        if (l1InductionVar) {
-            if (LoopFusionVerbose) {
-                errs() << "Replacing L2 induction variable with L1 induction variable\n";
-                errs() << "  L1 IV: ";
-                l1InductionVar->print(errs());
-                errs() << "\n  L2 IV: ";
-                inductionVariable->print(errs());
-                errs() << "\n";
-            }
-            inductionVariable->replaceAllUsesWith(l1InductionVar);
-            inductionVariable->eraseFromParent();
-        }
+    BasicBlock *l2Guard = nullptr;
+    if (L2.isGuarded()) {
+        l2Guard = L2.getLoopGuardBranch()->getParent();
     }
 
-    if (LoopFusionVerbose) {
-        errs() << "Replacing L2 preheader with L1 preheader\n";
-        errs() << "Replacing L2 latch with L1 latch\n";
+    if (L1.isGuarded()) {
+        L1.getLoopGuardBranch()->setSuccessor(1, L2.getExitBlock());
     }
+
+    PHINode *IV1 = getInductionVariable(L1);
+    PHINode *IV2 = getInductionVariable(L2);
+
+    if (IV1 && IV2) {
+        IV2->replaceAllUsesWith(IV1);
+        IV2->eraseFromParent();
+    } else {
+        return;
+    }
+
+    if (l2FirstBlock != L2.getHeader()) {
+        movePN(L1.getHeader(), L2.getHeader(), L2.getExitBlock());
+    }
+
+    l1LastBlock->getTerminator()->setOperand(0, l2FirstBlock);
+    exitingBlock->getTerminator()->setOperand(1, L2.getExitBlock());
 
     L2.getLoopLatch()->replaceAllUsesWith(L1.getLoopLatch());
     L2.getLoopLatch()->eraseFromParent();
 
-    movePN(l1Header, l2Header, l2Exit);
-
-    if (LoopFusionVerbose) {
-        errs() << "Connecting L1 last block to L2 first block\n";
+    if (l2Guard) {
+        l2Guard->eraseFromParent();
+        l2Preheader->dropAllReferences();
+        l2Preheader->eraseFromParent();
+    }
+    else {
+        l2Header->eraseFromParent();
     }
 
-    if (l2First == l2Last)  l2Last = l1Last;
+    l1ExitBlock->dropAllReferences();
+    l1ExitBlock->eraseFromParent();
 
-    fuseBodies(l1Last, l2First);
+    if (areNestedLoops(l1LastBlock, l2FirstBlock)) {
+        Value *bbToJump = l2FirstBlock->getTerminator()->getOperand(0);
 
-    if (LoopFusionVerbose) {
-        errs() << "Connecting L2 last block to L1 latch\n";
+        l1LastBlock->getTerminator()->setOperand(0, bbToJump);
+        l2FirstBlock->eraseFromParent();
     }
-
-    inst = BranchInst::Create(L1.getLoopLatch(), l2Last->getTerminator());
-    l2Last->getTerminator()->eraseFromParent();
-
-    if (LoopFusionVerbose) {
-        errs() << "Loop fusion completed successfully\n";
-    }
-
-    l2Preheader->eraseFromParent();
-    l2Header->eraseFromParent();
 }
 
 /**
