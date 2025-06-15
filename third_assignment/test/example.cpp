@@ -1,22 +1,25 @@
 int main() {
 
     int a = 2, b = 3;
+    int e;
 
     for (int i = 0; i < 10; i++) {
         int c = a + b;
         int d = a + 4;
 
-        a = b + 1;
+        //a = b + 1;
 
-        int e;
         if (a > 3) {
-            e = a + b * 2;
+            int k = a * 2;
+            e = k * 3;
         } else {
-            e = d + b / 2;
+            e = d / 2;
         }
 
-        int f = c + d;
+        int f = e + d;
     }
+
+    int m = e + 2;
 
     return 0;
 }
