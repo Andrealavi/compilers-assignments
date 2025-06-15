@@ -32,37 +32,38 @@ bool isOutsideLoop(Instruction *inst, Loop &L) {
     It simply checks if the operand/instruction is already contained
     in the loopInvariantInsts vector
 */
-bool isOpLoopInvariant(Instruction *inst,
+bool isOpLoopInvariant(
+    Instruction *inst,
     std::vector<Instruction*> loopInvariantInsts
 ) {
-    return std::find(loopInvariantInsts.begin(), loopInvariantInsts.end(), inst) !=
-        loopInvariantInsts.end();
+    return std::find(
+        loopInvariantInsts.begin(), loopInvariantInsts.end(), inst
+    ) != loopInvariantInsts.end();
 }
 
 /**
     Checks if an instruction is loop invariant
 
     It uses the previously defined helper functions to simplify the logic.
-    It also checks if the instruction is a branch or a return
+    It also checks if the instruction is a type of instruction we do not want
+    to hoist.
 */
 bool isLoopInvariant(Instruction &inst, Loop &L, DominatorTree &DT,
     std::vector<Instruction*> &loopInvariantInsts) {
 
     /*
         We don't want to hoist branch, call and return instructions,
-        because this will lead to problems.
+        because this will lead to problems in the control flow.
 
         If we hoist branch instructions, we will break the cfg.
-        If we hoist call instructions, we will could have problems related to its
-        side effects and return values. Moreover it would be difficult to check
-        whether it is invariant.
+        If we hoist call instructions,
+        we will have problems related to its side effects and return values,
+        moreover it would be difficult to check whether it is invariant.
         If we hoist return instruction we will break the cfg.
     */
     if (isa<BranchInst>(&inst)) return false;
     else if (isa<CallInst>(&inst)) return false;
     else if (isa<ReturnInst>(&inst)) return false;
-    else if (isa<LoadInst>(&inst)) return false;
-    else if (isa<StoreInst>(&inst)) return false;
     else if (isa<PHINode>(&inst)) return false;
 
     /*
@@ -91,6 +92,10 @@ bool isLoopInvariant(Instruction &inst, Loop &L, DominatorTree &DT,
     return true;
 }
 
+/**
+ * Helper function used to check whether an instruction dominates all its uses.
+ * If so, the function returns true, otherwise it returns false.
+ */
 bool checkDominance(Instruction &inst, DominatorTree &DT) {
 
     for (User *user : inst.users()){
@@ -130,8 +135,6 @@ std::vector<Instruction*> getLoopInvariantInsts(Loop &L, DominatorTree &DT) {
 
 /**
     Hoists instruction from the loop's blocks up to the loop's preheader.
-    It also removes repeated loads and checks for store instructions
-    that use the same pointer.
 */
 bool hoistInst(
     Loop &L,
