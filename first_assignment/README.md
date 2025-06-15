@@ -12,6 +12,7 @@ The first assignment for the compilers course consists of implementing a custom 
   - `x ^ 0 = x`
   - `x & -1 = x`
 
+// Da sistemare
 - **Strength Reduction**: Replacing expensive operations with cheaper ones
   - `x * 2^n → x << n` (multiply by power of 2 converted to left shift)
   - `x / 2^n → x >> n` (divide by power of 2 converted to right shift)
@@ -51,7 +52,7 @@ Alternatively, you can set up manually:
 
 ```bash
 # Set LLVM directory path (replace with your LLVM installation)
-export LLVM_DIR=/usr/lib/llvm-19/bin    # Usually this folder should be fine
+export LLVM_DIR=/usr/lib/llvm-19/bin    # Usually this folder should be fine on GNU/Linux systems
 
 # Create build directory
 mkdir build && cd build
