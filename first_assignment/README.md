@@ -12,7 +12,6 @@ The first assignment for the compilers course consists of implementing a custom 
   - `x ^ 0 = x`
   - `x & -1 = x`
 
-// Da sistemare
 - **Strength Reduction**: Replacing expensive operations with cheaper ones
   - `x * 2^n → x << n` (multiply by power of 2 converted to left shift)
   - `x / 2^n → x >> n` (divide by power of 2 converted to right shift)
